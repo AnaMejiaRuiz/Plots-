@@ -460,8 +460,8 @@ analizar_cuestionario <- function(nm_ctx) {
                     por_cct=FALSE, cct_ctx="CCT", cct_out="CCT",
                     folio_ctx="Folio", folio_out="Folio"),
     CTX_PMF = list(archivo="HD_EST_pre.xlsx", items=paste0("Q",16:97),
-                    por_cct=TRUE,  cct_ctx="CCT", cct_out="CCT",
-                    folio_ctx=NULL, folio_out=NULL)
+                    por_cct=FALSE, cct_ctx="CCT", cct_out="CCT",
+                    folio_ctx="Folio", folio_out="Folio")
   )
   oc <- OUTCOME_CFG[[nm_ctx]]
   vec_outcome_aligned <- rep(NA_real_, N)
