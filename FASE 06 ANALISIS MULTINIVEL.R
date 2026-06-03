@@ -821,10 +821,12 @@ analizar_mlm <- function(nm) {
   tit <- function(v) paste(v,"—",nm)
   gg  <- function(p) file.path(dir_nm,"GRAFICOS",p)
 
-  # G1: PMP PRE vs POST (violin + boxplot + puntos)
+  # G1: PMP PRE vs POST (violin + boxplot + puntos) — puntajes CRUDOS
   if (!is.null(df_long)) {
+    momentos_presentes <- unique(df_long$momento_lbl)
     df_viol <- df_long %>% filter(!is.na(PMP)) %>%
       mutate(momento_f=factor(momento_lbl, levels=c("PRE","POST")))
+    n_momentos <- n_distinct(df_viol$momento_f)
     g1 <- ggplot(df_viol, aes(x=momento_f, y=PMP, fill=momento_f)) +
       geom_violin(alpha=0.35, width=0.8, color=NA) +
       geom_boxplot(width=0.25, outlier.size=0.8, alpha=0.85,
@@ -833,18 +835,61 @@ analizar_mlm <- function(nm) {
                    size=4, color="white") +
       stat_summary(fun=mean, geom="text",
                    aes(label=sprintf("%.1f%%",after_stat(y))),
-                   vjust=-1.2, size=3.5, fontface="bold",
-                   color=c(COL_PRE,COL_POST)) +
+                   vjust=-1.2, size=3.5, fontface="bold") +
       scale_fill_manual(values=COL_MOM, name="Momento") +
       scale_y_continuous(labels=label_number(suffix="%"), limits=c(0,105)) +
-      labs(title=tit("Distribución PMP — PRE vs POST"),
+      labs(title=tit("Distribución PMP — PRE vs POST (puntajes crudos)"),
            subtitle=sprintf("n_pre=%d | n_post=%d | d_Cohen=%.2f",
                             nrow(df_pre), if(!is.null(df_post))nrow(df_post) else 0,
                             ifelse(is.na(d_cohen),0,d_cohen)),
            x=NULL, y="PMP (%)") +
       theme(legend.position="none",
-            axis.text.x=element_text(size=12,face="bold",color=c(COL_PRE,COL_POST)))
+            axis.text.x=element_text(size=12,face="bold"))
     guardar_g(g1, gg("G1_violin_PMP.png"), 7, 6)
+  }
+
+  # G1b: Medias marginales AJUSTADAS PRE vs POST (emmeans del modelo M1_tiempo)
+  # Estas medias controlan la estructura de anidamiento escolar → son las
+  # estimaciones ajustadas por el modelo multinivel
+  modelo_tiempo <- MODELOS$M1_tiempo
+  if (!is.null(modelo_tiempo) && tiene_post) {
+    df_em_pre_post <- tryCatch({
+      em <- as.data.frame(emmeans(modelo_tiempo, ~momento,
+                                   at=list(momento=c(0,1))))
+      em$momento_lbl <- ifelse(em$momento==0,"PRE","POST")
+      em$momento_f   <- factor(em$momento_lbl, levels=c("PRE","POST"))
+      em
+    }, error=function(e) NULL)
+
+    if (!is.null(df_em_pre_post)) {
+      # Guardar tabla de medias ajustadas
+      add_ws("Medias_Ajustadas_PRE_POST", df_em_pre_post)
+      write.csv(df_em_pre_post,
+        file.path(dir_nm,"TABLAS",paste0(nm,"_medias_ajustadas.csv")),
+        row.names=FALSE)
+
+      delta_aj <- round(diff(df_em_pre_post$emmean[order(df_em_pre_post$momento)]),2)
+      g1b <- ggplot(df_em_pre_post,
+                    aes(x=momento_f, y=emmean, fill=momento_f, color=momento_f)) +
+        geom_col(width=0.55, alpha=0.85, color=NA) +
+        geom_errorbar(aes(ymin=lower.CL, ymax=upper.CL),
+                      width=0.18, linewidth=1.2, color="grey30") +
+        geom_text(aes(label=sprintf("%.1f%%", emmean)),
+                  vjust=-0.6, size=5, fontface="bold",
+                  color=c(COL_PRE, COL_POST)) +
+        annotate("text", x=1.5, y=max(df_em_pre_post$upper.CL)+5,
+                 label=sprintf("Δ = %+.1f pp  (d=%.2f)",
+                               delta_aj, ifelse(is.na(d_cohen),0,d_cohen)),
+                 size=4.5, fontface="bold", color="#333333") +
+        scale_fill_manual(values=COL_MOM)  +
+        scale_y_continuous(labels=label_number(suffix="%"), limits=c(0,110)) +
+        labs(title=tit("Medias marginales ajustadas — PRE vs POST"),
+             subtitle="Estimadas por el modelo multinivel M1 | IC 95% | controlando estructura escolar",
+             x=NULL, y="PMP estimado (%)") +
+        theme(legend.position="none",
+              axis.text.x=element_text(size=13,face="bold",color=c(COL_PRE,COL_POST)))
+      guardar_g(g1b, gg("G1b_medias_ajustadas_PRE_POST.png"), 7, 6)
+    }
   }
 
   # G2: ICC y componentes de varianza (modelo nulo)
