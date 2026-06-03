@@ -397,7 +397,10 @@ analizar_mlm <- function(nm) {
   # ── Leer datos PRE y POST ─────────────────────────────────────────────────
   rp <- paste0(ruta_pre,  cfg$archivo_pre)
   rq <- paste0(ruta_post, cfg$archivo_post)
-  if (!file.exists(rp)) { cat("  Sin PRE\n"); return(invisible(NULL)) }
+  if (!file.exists(rp)) {
+    cat(sprintf("  !! Sin PRE — archivo no encontrado: %s\n", rp))
+    return(invisible(NULL))
+  }
 
   df_pre  <- read_excel(rp)
   df_post <- if (file.exists(rq)) read_excel(rq) else NULL
@@ -432,22 +435,25 @@ analizar_mlm <- function(nm) {
       mutate(momento=1L, momento_lbl="POST")
     df_long <- bind_rows(df_pre_long, df_post_long) %>%
       mutate(Entidad=substr(as.character(.data[[cfg$cct]]),1,2))
-
-    # Extraer grado desde Folio para estudiantes (L2 del modelo de 3 niveles)
-    if (cfg$tipo_modelo == "estudiantes" && cfg$folio %in% names(df_long)) {
-      df_long$Grado_Folio <- construir_grado_completo(
-        df_long[[cfg$folio]],
-        if(!is.null(cfg$nivel) && cfg$nivel %in% names(df_long))
-          df_long[[cfg$nivel]] else rep(NA,nrow(df_long)))
-      n_grados <- n_distinct(na.omit(df_long$Grado_Folio))
-      cat(sprintf("  Grados extraídos del Folio: %d grupos únicos → %s
-",
-                  n_grados,
-                  paste(sort(unique(na.omit(df_long$Grado_Folio))),collapse=", ")))
-    }
-    cat(sprintf("  Formato largo: %d observaciones
-", nrow(df_long)))
+  } else {
+    # Sin POST: construir df_long solo con PRE para poder estimar null model e ICC
+    df_long <- df_pre %>% select(all_of(c(meta_cols,"PMP"))) %>%
+      mutate(momento=0L, momento_lbl="PRE",
+             Entidad=substr(as.character(.data[[cfg$cct]]),1,2))
   }
+
+  # Extraer grado desde Folio para estudiantes (L2 del modelo de 3 niveles)
+  if (cfg$tipo_modelo == "estudiantes" && cfg$folio %in% names(df_long)) {
+    df_long$Grado_Folio <- construir_grado_completo(
+      df_long[[cfg$folio]],
+      if(!is.null(cfg$nivel) && cfg$nivel %in% names(df_long))
+        df_long[[cfg$nivel]] else rep(NA,nrow(df_long)))
+    n_grados <- n_distinct(na.omit(df_long$Grado_Folio))
+    cat(sprintf("  Grados extraídos del Folio: %d grupos únicos → %s\n",
+                n_grados,
+                paste(sort(unique(na.omit(df_long$Grado_Folio))),collapse=", ")))
+  }
+  cat(sprintf("  Formato largo: %d observaciones\n", nrow(df_long)))
 
   # ── Agregar variables L2 del CTX_DIR ─────────────────────────────────────
   ruta_dir <- paste0(ruta_pre,"CTX_DIR_pre.xlsx")
@@ -540,6 +546,7 @@ analizar_mlm <- function(nm) {
   cat("  Ajustando modelos...\n")
   MODELOS <- list()
 
+  tiene_post <- !is.null(df_post)
   usar_largo <- !is.null(df_mlm) && nrow(df_mlm)>30 &&
                 "PMP" %in% names(df_mlm) && sum(!is.na(df_mlm$PMP))>30
 
@@ -577,8 +584,8 @@ analizar_mlm <- function(nm) {
                 coalesce(icc_res$icc_escuela,0)))
   }
 
-  # ── M1: + Tiempo (PRE→POST) ───────────────────────────────────────────────
-  if (usar_largo) {
+  # ── M1: + Tiempo (PRE→POST) ─── solo si hay datos POST ─────────────────────
+  if (usar_largo && tiene_post) {
     if (tiene_anid_l2) {
       fmla_m1 <- as.formula(
         sprintf("PMP ~ momento + (1|%s/%s)", cct_col, niv_anid_col))
@@ -596,14 +603,18 @@ analizar_mlm <- function(nm) {
   if (usar_largo && !is.null(nivel_col) && nivel_col %in% names(df_mlm)) {
     if (tiene_anid_l2) {
       fmla_m2 <- as.formula(
-        sprintf("PMP ~ momento + as.factor(%s) + (1|%s/%s)",
-                nivel_col, cct_col, niv_anid_col))
+        sprintf("PMP ~ %s + (1|%s/%s)",
+                if(tiene_post) paste0("momento + as.factor(",nivel_col,")")
+                else paste0("as.factor(",nivel_col,")"),
+                cct_col, niv_anid_col))
       MODELOS$M2_nivel <- seg(lmer(fmla_m2, data=df_mlm, REML=FALSE,
                                     control=lmerControl(optimizer="bobyqa")))
     } else {
       MODELOS$M2_nivel <- seg(lmer(
-        as.formula(sprintf("PMP ~ momento + as.factor(%s) + (1|%s)",
-                           nivel_col, cct_col)),
+        as.formula(sprintf("PMP ~ %s + (1|%s)",
+                           if(tiene_post) paste0("momento + as.factor(",nivel_col,")")
+                           else paste0("as.factor(",nivel_col,")"),
+                           cct_col)),
         data=df_mlm, REML=FALSE,
         control=lmerControl(optimizer="bobyqa")))
     }
@@ -619,20 +630,20 @@ analizar_mlm <- function(nm) {
   if (usar_largo && length(vars_l2_cgm_ok)>0) {
     pred_l2 <- paste(vars_l2_cgm_ok[seq_len(min(5,length(vars_l2_cgm_ok)))],
                      collapse="+")
+    pred_fijo <- if (tiene_post) paste0("momento + ", pred_l2) else pred_l2
     if (tiene_anid_l2) {
       fmla_m3 <- as.formula(
-        sprintf("PMP ~ momento + %s + (1|%s/%s)", pred_l2, cct_col, niv_anid_col))
+        sprintf("PMP ~ %s + (1|%s/%s)", pred_fijo, cct_col, niv_anid_col))
     } else {
       fmla_m3 <- as.formula(
-        sprintf("PMP ~ momento + %s + (1|%s)", pred_l2, cct_col))
+        sprintf("PMP ~ %s + (1|%s)", pred_fijo, cct_col))
     }
     MODELOS$M3_l2 <- seg(lmer(fmla_m3, data=df_mlm, REML=FALSE,
                                 control=lmerControl(optimizer="bobyqa")))
   }
 
-  # ── M4: Pendientes aleatorias del tiempo ──────────────────────────────────
-  # ¿El efecto de la intervención varía entre escuelas?
-  if (usar_largo && !is.null(MODELOS$M1_tiempo)) {
+  # ── M4: Pendientes aleatorias del tiempo ── solo si hay POST ─────────────
+  if (usar_largo && tiene_post && !is.null(MODELOS$M1_tiempo)) {
     n_l3 <- n_distinct(na.omit(df_mlm[[cct_col]]))
     if (n_l3 >= 10) {
       if (tiene_anid_l2) {
@@ -649,8 +660,8 @@ analizar_mlm <- function(nm) {
     }
   }
 
-  # ── M5: Interacción cruzada tiempo × nivel educativo ─────────────────────
-  if (usar_largo && !is.null(nivel_col) && nivel_col %in% names(df_mlm)) {
+  # ── M5: Interacción cruzada tiempo × nivel educativo ── solo si hay POST ──
+  if (usar_largo && tiene_post && !is.null(nivel_col) && nivel_col %in% names(df_mlm)) {
     if (tiene_anid_l2) {
       fmla_m5 <- as.formula(
         sprintf("PMP ~ momento * as.factor(%s) + (1|%s/%s)",
@@ -664,8 +675,8 @@ analizar_mlm <- function(nm) {
                                         control=lmerControl(optimizer="bobyqa")))
   }
 
-  # ── M5b: Interacción tiempo × infraestructura L2 ─────────────────────────
-  if (usar_largo && "Q32_cgm" %in% names(df_mlm)) {
+  # ── M5b: Interacción tiempo × infraestructura L2 ── solo si hay POST ──────
+  if (usar_largo && tiene_post && "Q32_cgm" %in% names(df_mlm)) {
     if (tiene_anid_l2) {
       fmla_m5b <- as.formula(
         sprintf("PMP ~ momento * Q32_cgm + (1|%s/%s)", cct_col, niv_anid_col))
