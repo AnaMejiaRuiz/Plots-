@@ -215,19 +215,19 @@ calcular_icc_modelo <- function(modelo) {
        var_total   = round(var_total,3))
 }
 
-# ── R² Snijders & Bosker (1994) ───────────────────────────────────────────────
-r2_multinivel <- function(modelo_completo, modelo_nulo) {
-  if (is.null(modelo_completo)||is.null(modelo_nulo))
-    return(list(r2_l1=NA, r2_l2=NA))
-  vc_c <- as.data.frame(VarCorr(modelo_completo))
-  vc_n <- as.data.frame(VarCorr(modelo_nulo))
-  var_res_c <- vc_c$vcov[vc_c$grp=="Residual"]
-  var_res_n <- vc_n$vcov[vc_n$grp=="Residual"]
-  var_l2_c  <- sum(vc_c$vcov[vc_c$grp!="Residual"])
-  var_l2_n  <- sum(vc_n$vcov[vc_n$grp!="Residual"])
-  r2_l1 <- round(max(0,(var_res_n-var_res_c)/var_res_n), 4)
-  r2_l2 <- round(max(0,(var_l2_n -var_l2_c) /var_l2_n),  4)
-  list(r2_l1=r2_l1, r2_l2=r2_l2)
+# ── R² Nakagawa & Schielzeth (2013) via MuMIn::r.squaredGLMM ─────────────────
+# R²m (marginal)    = varianza explicada por efectos FIJOS (predictores)
+# R²c (conditional) = varianza explicada por efectos fijos + aleatorios
+# Funciona igual para modelos 2 y 3 niveles; no requiere que nulo y completo
+# estén ajustados con el mismo método (REML vs ML) — evita el sesgo de Snijders
+r2_multinivel <- function(modelo_completo, modelo_nulo=NULL) {
+  if (is.null(modelo_completo)) return(list(r2_l1=NA_real_, r2_l2=NA_real_))
+  tryCatch({
+    r2 <- MuMIn::r.squaredGLMM(modelo_completo)
+    # r.squaredGLMM puede devolver varias filas (métodos); tomar la primera
+    list(r2_l1 = round(r2[1, "R2m"], 4),   # marginal  (efectos fijos)
+         r2_l2 = round(r2[1, "R2c"], 4))    # conditional (fijos + aleatorios)
+  }, error=function(e) list(r2_l1=NA_real_, r2_l2=NA_real_))
 }
 
 # ── Tabla de efectos fijos formateada ────────────────────────────────────────
@@ -764,12 +764,13 @@ analizar_mlm <- function(nm) {
   modelo_nulo_r2 <- if(!is.null(MODELOS$M0_nulo_3niv)) MODELOS$M0_nulo_3niv
                    else if(!is.null(MODELOS$M0_nulo_2niv)) MODELOS$M0_nulo_2niv
                    else MODELOS$M0_nulo
+  # R² solo tiene sentido cuando el mejor modelo tiene predictores (no solo intercepto)
   n_fe_mejor <- if(!is.null(mejor_modelo)) length(fixef(mejor_modelo)) else 0
   n_fe_nulo  <- if(!is.null(modelo_nulo_r2)) length(fixef(modelo_nulo_r2)) else 0
   r2_res <- if (n_fe_mejor > n_fe_nulo)
-    r2_multinivel(mejor_modelo, modelo_nulo_r2)
+    r2_multinivel(mejor_modelo)
   else
-    list(r2_l1=NA_real_, r2_l2=NA_real_)  # No aplica: mejor modelo = nulo
+    list(r2_l1=NA_real_, r2_l2=NA_real_)   # No aplica: mejor modelo = nulo
 
   # d de Cohen — dos versiones
   # d_cruda  (Feingold, 2009): sobre diferencias individuales observadas (PRE→POST pareado)
@@ -830,8 +831,8 @@ analizar_mlm <- function(nm) {
     d_Cohen_ajust  = d_cohen_aj, # Multinivel: delta_modelo / SD_residual_nulo
     ICC_escuela    = coalesce(icc_res$icc_escuela, NA_real_),
     ICC_grado      = coalesce(icc_res$icc_grado,   NA_real_),
-    R2_L1          = r2_res$r2_l1,
-    R2_L2          = r2_res$r2_l2,
+    R2_marginal    = r2_res$r2_l1,   # efectos fijos (Nakagawa & Schielzeth 2013)
+    R2_condicional = r2_res$r2_l2,   # efectos fijos + aleatorios
     n_modelos      = length(modelos_ok),
     stringsAsFactors=FALSE)
   add_ws("Resumen_Ejecutivo", df_resumen_exec)
@@ -1134,7 +1135,7 @@ df_resumen_global <- do.call(rbind, lapply(RESULTADOS_MLM, function(r) r$resumen
 if (!is.null(df_resumen_global)) {
   print(df_resumen_global %>%
           select(instrumento,figura,PMP_pre,PMP_post,delta_pp,
-                 d_Cohen_crudo,d_Cohen_ajust,ICC_escuela,R2_L1,R2_L2),
+                 d_Cohen_crudo,d_Cohen_ajust,ICC_escuela,R2_marginal,R2_condicional),
         row.names=FALSE)
   write.csv(df_resumen_global,
             file.path(ruta_sal,"TABLAS","00_RESUMEN_MLM_Global.csv"), row.names=FALSE)
