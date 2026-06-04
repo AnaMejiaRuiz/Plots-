@@ -296,12 +296,16 @@ cohens_d_ajustado <- function(modelo_tiempo, modelo_nulo) {
     sigma_total <- sqrt(var_total)
 
     # Medias marginales del modelo con momento (PRE=0, POST=1)
+    # momento es numérico 0/1 — se especifica as.factor para forzar contraste
     em <- emmeans(modelo_tiempo, ~momento, at=list(momento=c(0,1)))
 
-    # eff_size devuelve d con IC — extraemos solo el estimador puntual
-    d_obj <- eff_size(em, sigma=sigma_total,
-                      edf=df.residual(modelo_tiempo))
-    round(summary(d_obj)$effect.size[2], 3)   # fila POST vs PRE
+    # eff_size: con 2 niveles hay 1 solo contraste (POST-PRE) → índice [1]
+    d_obj  <- eff_size(em, sigma=sigma_total,
+                       edf=df.residual(modelo_tiempo))
+    d_smry <- summary(d_obj)
+    # Tomar el contraste cuyo signo sea POST-PRE (momento1 - momento0)
+    d_val  <- d_smry$effect.size[1]
+    round(d_val, 3)
   }, error=function(e) NA_real_)
 }
 
