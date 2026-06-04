@@ -275,10 +275,25 @@ comparar_modelos <- function(lista_modelos) {
 
 # ── Cohen's d para cambio PRE-POST ───────────────────────────────────────────
 cohens_d_mlm <- function(pmp_pre, pmp_post) {
+  # d_z Feingold (2009): mean(POST-PRE) / SD(POST-PRE) — sobre pares observados
   dif <- pmp_post - pmp_pre
   dif <- dif[!is.na(dif)]
   if (length(dif)<5) return(NA_real_)
   round(mean(dif)/sd(dif), 3)
+}
+
+cohens_d_ajustado <- function(modelo_tiempo, modelo_nulo) {
+  # d ajustada = (emmean_POST - emmean_PRE) / sqrt(var_residual_nulo)
+  # Captura el efecto de la intervención controlando estructura multinivel
+  if (is.null(modelo_tiempo) || is.null(modelo_nulo)) return(NA_real_)
+  tryCatch({
+    em <- as.data.frame(emmeans(modelo_tiempo, ~momento, at=list(momento=c(0,1))))
+    delta <- em$emmean[em$momento==1] - em$emmean[em$momento==0]
+    vc_n  <- as.data.frame(VarCorr(modelo_nulo))
+    var_res <- vc_n$vcov[vc_n$grp=="Residual"]
+    if (length(var_res)==0 || var_res<=0) return(NA_real_)
+    round(delta / sqrt(var_res), 3)
+  }, error=function(e) NA_real_)
 }
 
 # ── BLUPs (efectos aleatorios) por CCT ───────────────────────────────────────
@@ -731,9 +746,11 @@ analizar_mlm <- function(nm) {
                    else MODELOS$M0_nulo
   r2_res <- r2_multinivel(mejor_modelo, modelo_nulo_r2)
 
-  # d de Cohen para el cambio PRE-POST (pareado por Folio)
+  # d de Cohen — dos versiones
+  # d_cruda  (Feingold, 2009): sobre diferencias individuales observadas (PRE→POST pareado)
+  # d_ajust  (multinivel):     delta estimado por modelo / SD residual del nulo
   d_cohen <- tryCatch({
-    if (!is.null(df_long) && cfg$folio %in% names(df_long)) {
+    if (!is.null(df_long) && cfg$folio %in% names(df_long) && tiene_post) {
       df_paired <- df_long %>%
         filter(!is.na(PMP), momento_lbl %in% c("PRE","POST")) %>%
         select(all_of(c(cfg$folio,"momento_lbl","PMP"))) %>%
@@ -745,6 +762,8 @@ analizar_mlm <- function(nm) {
       else NA_real_
     } else NA_real_
   }, error=function(e) NA_real_)
+
+  d_cohen_aj <- cohens_d_ajustado(MODELOS$M1_tiempo, modelo_nulo_ref)
 
   # BLUPs por CCT
   blups_cct <- extraer_blups(mejor_modelo, cct_col)
@@ -773,21 +792,22 @@ analizar_mlm <- function(nm) {
 
   # Resumen ejecutivo
   df_resumen_exec <- data.frame(
-    instrumento  = nm,
-    figura       = cfg$figura,
-    niveles_anid = if(tiene_anid_l2) 3L else 2L,
-    N_pre        = nrow(df_pre),
-    N_post       = if(!is.null(df_post)) nrow(df_post) else NA,
-    PMP_pre      = round(mean(df_pre$PMP,na.rm=TRUE),2),
-    PMP_post     = if(!is.null(df_post)) round(mean(df_post$PMP,na.rm=TRUE),2) else NA,
-    delta_pp     = if(!is.null(df_post))
+    instrumento    = nm,
+    figura         = cfg$figura,
+    niveles_anid   = if(tiene_anid_l2) 3L else 2L,
+    N_pre          = nrow(df_pre),
+    N_post         = if(!is.null(df_post)) nrow(df_post) else NA,
+    PMP_pre        = round(mean(df_pre$PMP,na.rm=TRUE),2),
+    PMP_post       = if(!is.null(df_post)) round(mean(df_post$PMP,na.rm=TRUE),2) else NA,
+    delta_pp       = if(!is.null(df_post))
       round(mean(df_post$PMP,na.rm=TRUE)-mean(df_pre$PMP,na.rm=TRUE),2) else NA,
-    d_Cohen      = d_cohen,
-    ICC_escuela  = coalesce(icc_res$icc_escuela, NA_real_),
-    ICC_grado    = coalesce(icc_res$icc_grado,   NA_real_),
-    R2_L1        = r2_res$r2_l1,
-    R2_L2        = r2_res$r2_l2,
-    n_modelos    = length(modelos_ok),
+    d_Cohen_crudo  = d_cohen,    # Feingold (2009): sobre diferencias individuales obs.
+    d_Cohen_ajust  = d_cohen_aj, # Multinivel: delta_modelo / SD_residual_nulo
+    ICC_escuela    = coalesce(icc_res$icc_escuela, NA_real_),
+    ICC_grado      = coalesce(icc_res$icc_grado,   NA_real_),
+    R2_L1          = r2_res$r2_l1,
+    R2_L2          = r2_res$r2_l2,
+    n_modelos      = length(modelos_ok),
     stringsAsFactors=FALSE)
   add_ws("Resumen_Ejecutivo", df_resumen_exec)
 
@@ -878,8 +898,10 @@ analizar_mlm <- function(nm) {
                   vjust=-0.6, size=5, fontface="bold",
                   color=c(COL_PRE, COL_POST)) +
         annotate("text", x=1.5, y=max(df_em_pre_post$upper.CL)+5,
-                 label=sprintf("Δ = %+.1f pp  (d=%.2f)",
-                               delta_aj, ifelse(is.na(d_cohen),0,d_cohen)),
+                 label=sprintf("Δ = %+.1f pp  (d_aj=%.2f | d_crudo=%.2f)",
+                               delta_aj,
+                               ifelse(is.na(d_cohen_aj),0,d_cohen_aj),
+                               ifelse(is.na(d_cohen),0,d_cohen)),
                  size=4.5, fontface="bold", color="#333333") +
         scale_fill_manual(values=COL_MOM)  +
         scale_y_continuous(labels=label_number(suffix="%"), limits=c(0,110)) +
@@ -1086,7 +1108,8 @@ cat("\n\n", strrep("═",65), "\n  RESUMEN GLOBAL MLM\n", strrep("═",65), "\n"
 df_resumen_global <- do.call(rbind, lapply(RESULTADOS_MLM, function(r) r$resumen))
 if (!is.null(df_resumen_global)) {
   print(df_resumen_global %>%
-          select(instrumento,figura,PMP_pre,PMP_post,delta_pp,d_Cohen,ICC_escuela,R2_L1,R2_L2),
+          select(instrumento,figura,PMP_pre,PMP_post,delta_pp,
+                 d_Cohen_crudo,d_Cohen_ajust,ICC_escuela,R2_L1,R2_L2),
         row.names=FALSE)
   write.csv(df_resumen_global,
             file.path(ruta_sal,"TABLAS","00_RESUMEN_MLM_Global.csv"), row.names=FALSE)
