@@ -719,24 +719,35 @@ analizar_mlm <- function(nm) {
                      else if(!is.null(MODELOS$M0_nulo_2niv)) MODELOS$M0_nulo_2niv
                      else MODELOS$M0_nulo
 
-  comp_modelos <- if (length(modelos_ok)>=2) {
+  # Comparación solo entre modelos ML (excluir nulos REML para que anova() no mezcle)
+  modelos_ml <- Filter(function(m) {
+    tryCatch(!isREML(m), error=function(e) FALSE)
+  }, modelos_ok)
+
+  comp_modelos <- if (length(modelos_ml) >= 2) {
     tryCatch({
-      do.call(anova, modelos_ok) %>% as.data.frame() %>%
-        mutate(modelo=names(modelos_ok),
+      do.call(anova, modelos_ml) %>% as.data.frame() %>%
+        mutate(modelo=names(modelos_ml),
                AIC=round(AIC,1), BIC=round(BIC,1)) %>%
         select(modelo, everything())
     }, error=function(e) NULL)
   } else NULL
 
-  # Seleccionar mejor modelo por BIC
-  mejor_modelo <- if (!is.null(comp_modelos)) {
+  # Seleccionar mejor modelo: por BIC entre modelos ML; si no hay, el más complejo
+  mejor_modelo <- if (!is.null(comp_modelos) && nrow(comp_modelos) > 0) {
     nm_mejor <- comp_modelos$modelo[which.min(comp_modelos$BIC)]
-    modelos_ok[[nm_mejor]]
-  } else modelos_ok[[length(modelos_ok)]]
+    modelos_ml[[nm_mejor]]
+  } else if (length(modelos_ml) > 0) {
+    modelos_ml[[length(modelos_ml)]]   # más complejo disponible
+  } else {
+    modelo_nulo_ref   # fallback: solo hay modelo nulo
+  }
 
   cat(sprintf("  Mejor modelo: %s\n",
-              if(!is.null(comp_modelos)) comp_modelos$modelo[which.min(comp_modelos$BIC)]
-              else names(modelos_ok)[length(modelos_ok)]))
+              if(!is.null(comp_modelos) && nrow(comp_modelos)>0)
+                comp_modelos$modelo[which.min(comp_modelos$BIC)]
+              else if(length(modelos_ml)>0) names(modelos_ml)[length(modelos_ml)]
+              else "M0_nulo (sin predictores)"))
 
   # ── EXTRAER RESULTADOS ────────────────────────────────────────────────────
 
@@ -748,11 +759,17 @@ analizar_mlm <- function(nm) {
   varianzas <- do.call(rbind, lapply(names(modelos_ok),
     function(nm_m) tabla_varianza(modelos_ok[[nm_m]], nm_m)))
 
-  # R² del mejor modelo vs nulo
+  # R² del mejor modelo vs nulo (Snijders & Bosker, 1994)
+  # Solo tiene sentido cuando el mejor modelo tiene predictores adicionales al nulo
   modelo_nulo_r2 <- if(!is.null(MODELOS$M0_nulo_3niv)) MODELOS$M0_nulo_3niv
                    else if(!is.null(MODELOS$M0_nulo_2niv)) MODELOS$M0_nulo_2niv
                    else MODELOS$M0_nulo
-  r2_res <- r2_multinivel(mejor_modelo, modelo_nulo_r2)
+  n_fe_mejor <- if(!is.null(mejor_modelo)) length(fixef(mejor_modelo)) else 0
+  n_fe_nulo  <- if(!is.null(modelo_nulo_r2)) length(fixef(modelo_nulo_r2)) else 0
+  r2_res <- if (n_fe_mejor > n_fe_nulo)
+    r2_multinivel(mejor_modelo, modelo_nulo_r2)
+  else
+    list(r2_l1=NA_real_, r2_l2=NA_real_)  # No aplica: mejor modelo = nulo
 
   # d de Cohen — dos versiones
   # d_cruda  (Feingold, 2009): sobre diferencias individuales observadas (PRE→POST pareado)
