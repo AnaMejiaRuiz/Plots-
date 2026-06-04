@@ -67,7 +67,7 @@ guardar_g <- function(g,path,w=10,h=6)
 # 1. RUTAS  ← ADAPTAR
 # ---------------------------------------------------------------------------- #
 ruta_pre  <- "C:/Users/almejia/Desktop/RESULTADOS 25_26/00_DATOS/Cuestionarios_independientes/"
-ruta_post <- "C:/Users/almejia/Desktop/RESULTADOS 25_26/00_DATOS/bases_post/"
+ruta_post <- ruta_pre   # PRE y POST en la misma carpeta; cambiar si están separados
 ruta_f4   <- "C:/Users/almejia/Desktop/RESULTADOS 25_26/04_PMP/"       # PMP calculados
 ruta_f5   <- "C:/Users/almejia/Desktop/RESULTADOS 25_26/05_MULTINIVEL/"  # vars seleccionadas
 ruta_sal  <- "C:/Users/almejia/Desktop/RESULTADOS 25_26/06_MULTINIVEL/"
