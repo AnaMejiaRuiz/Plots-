@@ -284,28 +284,23 @@ cohens_d_mlm <- function(pmp_pre, pmp_post) {
 
 cohens_d_ajustado <- function(modelo_tiempo, modelo_nulo) {
   # d ajustada (Hedges 2007; Pustejovsky & Tipton 2021):
-  #   sigma = sqrt(var_total_nulo) donde var_total = var_random + var_residual
-  #   Usa varianza TOTAL (no solo residual) para no inflar la d ignorando
-  #   la varianza entre escuelas. Las medias estimadas vienen del modelo con momento.
+  #   sigma = sqrt(var_total_nulo) = sqrt(sum de todos los componentes de varianza)
+  #   Usa varianza TOTAL incondicional para no inflar la d ignorando la
+  #   varianza entre escuelas (L2/L3). Delta viene de las medias marginales del modelo.
   if (is.null(modelo_tiempo) || is.null(modelo_nulo)) return(NA_real_)
   tryCatch({
-    # Varianza total incondicional del outcome (modelo nulo)
-    vc_nulo   <- insight::get_variance(modelo_nulo)
-    var_total <- vc_nulo$var.random + vc_nulo$var.residual
+    # Varianza total: suma de todos los componentes (VarCorr del modelo nulo)
+    vc        <- as.data.frame(VarCorr(modelo_nulo))
+    var_total <- sum(vc$vcov, na.rm=TRUE)
     if (is.na(var_total) || var_total <= 0) return(NA_real_)
-    sigma_total <- sqrt(var_total)
 
-    # Medias marginales del modelo con momento (PRE=0, POST=1)
-    # momento es numérico 0/1 — se especifica as.factor para forzar contraste
-    em <- emmeans(modelo_tiempo, ~momento, at=list(momento=c(0,1)))
+    # Delta estimado por el modelo con momento (medias marginales PRE=0, POST=1)
+    em    <- as.data.frame(emmeans(modelo_tiempo, ~momento,
+                                   at=list(momento=c(0,1))))
+    delta <- em$emmean[em$momento == 1] - em$emmean[em$momento == 0]
+    if (length(delta) == 0 || is.na(delta)) return(NA_real_)
 
-    # eff_size: con 2 niveles hay 1 solo contraste (POST-PRE) → índice [1]
-    d_obj  <- eff_size(em, sigma=sigma_total,
-                       edf=df.residual(modelo_tiempo))
-    d_smry <- summary(d_obj)
-    # Tomar el contraste cuyo signo sea POST-PRE (momento1 - momento0)
-    d_val  <- d_smry$effect.size[1]
-    round(d_val, 3)
+    round(delta / sqrt(var_total), 3)
   }, error=function(e) NA_real_)
 }
 
