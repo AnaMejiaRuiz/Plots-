@@ -31,7 +31,7 @@
 pkgs <- c("readxl","writexl","openxlsx","dplyr","tidyr","stringr","tibble",
           "ggplot2","scales","RColorBrewer","patchwork","ggrepel",
           "lme4","lmerTest","performance","effectsize","broom.mixed",
-          "emmeans","MuMIn")
+          "emmeans","MuMIn","insight")
 for (p in pkgs) if (!requireNamespace(p,quietly=TRUE)) install.packages(p)
 suppressPackageStartupMessages({
   library(readxl);   library(writexl);  library(openxlsx)
@@ -40,7 +40,7 @@ suppressPackageStartupMessages({
   library(ggrepel)
   library(lme4);     library(lmerTest); library(performance)
   library(effectsize); library(broom.mixed)
-  library(emmeans);  library(MuMIn)
+  library(emmeans);  library(MuMIn); library(insight)
 })
 set.seed(42)
 
@@ -283,16 +283,25 @@ cohens_d_mlm <- function(pmp_pre, pmp_post) {
 }
 
 cohens_d_ajustado <- function(modelo_tiempo, modelo_nulo) {
-  # d ajustada = (emmean_POST - emmean_PRE) / sqrt(var_residual_nulo)
-  # Captura el efecto de la intervención controlando estructura multinivel
+  # d ajustada (Hedges 2007; Pustejovsky & Tipton 2021):
+  #   sigma = sqrt(var_total_nulo) donde var_total = var_random + var_residual
+  #   Usa varianza TOTAL (no solo residual) para no inflar la d ignorando
+  #   la varianza entre escuelas. Las medias estimadas vienen del modelo con momento.
   if (is.null(modelo_tiempo) || is.null(modelo_nulo)) return(NA_real_)
   tryCatch({
-    em <- as.data.frame(emmeans(modelo_tiempo, ~momento, at=list(momento=c(0,1))))
-    delta <- em$emmean[em$momento==1] - em$emmean[em$momento==0]
-    vc_n  <- as.data.frame(VarCorr(modelo_nulo))
-    var_res <- vc_n$vcov[vc_n$grp=="Residual"]
-    if (length(var_res)==0 || var_res<=0) return(NA_real_)
-    round(delta / sqrt(var_res), 3)
+    # Varianza total incondicional del outcome (modelo nulo)
+    vc_nulo   <- insight::get_variance(modelo_nulo)
+    var_total <- vc_nulo$var.random + vc_nulo$var.residual
+    if (is.na(var_total) || var_total <= 0) return(NA_real_)
+    sigma_total <- sqrt(var_total)
+
+    # Medias marginales del modelo con momento (PRE=0, POST=1)
+    em <- emmeans(modelo_tiempo, ~momento, at=list(momento=c(0,1)))
+
+    # eff_size devuelve d con IC — extraemos solo el estimador puntual
+    d_obj <- eff_size(em, sigma=sigma_total,
+                      edf=df.residual(modelo_tiempo))
+    round(summary(d_obj)$effect.size[2], 3)   # fila POST vs PRE
   }, error=function(e) NA_real_)
 }
 
