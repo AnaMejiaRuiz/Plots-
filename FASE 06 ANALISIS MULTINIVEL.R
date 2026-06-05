@@ -956,48 +956,67 @@ analizar_mlm <- function(nm) {
     guardar_g(g1, gg("G1_violin_PMP.png"), 7, 6)
   }
 
-  # G1b: Medias marginales AJUSTADAS PRE vs POST (emmeans del modelo M1_tiempo)
-  # Estas medias controlan la estructura de anidamiento escolar → son las
-  # estimaciones ajustadas por el modelo multinivel
-  modelo_tiempo <- MODELOS$M1_tiempo
-  if (!is.null(modelo_tiempo) && tiene_post) {
+  # G1b: Medias marginales AJUSTADAS PRE vs POST
+  # Fuente: emmeans de M1_tiempo si está disponible; si no, medias crudas de df_long
+  if (tiene_post) {
     df_em_pre_post <- tryCatch({
-      em <- as.data.frame(emmeans(modelo_tiempo, ~momento,
-                                   at=list(momento=c(0,1))))
-      em$momento_lbl <- ifelse(em$momento==0,"PRE","POST")
-      em$momento_f   <- factor(em$momento_lbl, levels=c("PRE","POST"))
+      modelo_tiempo <- MODELOS$M1_tiempo
+      if (!is.null(modelo_tiempo)) {
+        em <- as.data.frame(emmeans(modelo_tiempo, ~momento,
+                                     at=list(momento=c(0,1))))
+        em$momento_lbl <- ifelse(em$momento==0,"PRE","POST")
+        em$tipo_media  <- "Ajustada (MLM)"
+      } else {
+        # Fallback: medias crudas con IC bootstrap simple
+        em <- df_long %>%
+          filter(!is.na(PMP), momento_lbl %in% c("PRE","POST")) %>%
+          group_by(momento_lbl) %>%
+          summarise(emmean  = mean(PMP, na.rm=TRUE),
+                    SE      = sd(PMP, na.rm=TRUE)/sqrt(n()),
+                    lower.CL = emmean - 1.96*SE,
+                    upper.CL = emmean + 1.96*SE,
+                    momento  = first(momento),
+                    .groups="drop")
+        em$tipo_media <- "Cruda (sin ajuste MLM)"
+      }
+      em$momento_f <- factor(em$momento_lbl, levels=c("PRE","POST"))
       em
     }, error=function(e) NULL)
 
-    if (!is.null(df_em_pre_post)) {
-      # Guardar tabla de medias ajustadas
+    if (!is.null(df_em_pre_post) && nrow(df_em_pre_post)==2) {
       add_ws("Medias_Ajustadas_PRE_POST", df_em_pre_post)
       write.csv(df_em_pre_post,
         file.path(dir_nm,"TABLAS",paste0(nm,"_medias_ajustadas.csv")),
         row.names=FALSE)
 
-      delta_aj <- round(diff(df_em_pre_post$emmean[order(df_em_pre_post$momento)]),2)
-      g1b <- ggplot(df_em_pre_post,
-                    aes(x=momento_f, y=emmean, fill=momento_f, color=momento_f)) +
-        geom_col(width=0.55, alpha=0.85, color=NA) +
+      df_plot <- df_em_pre_post %>%
+        arrange(momento_f) %>%
+        mutate(color_barra = c(COL_PRE, COL_POST))
+
+      delta_aj  <- round(df_plot$emmean[df_plot$momento_f=="POST"] -
+                          df_plot$emmean[df_plot$momento_f=="PRE"], 2)
+      tipo_tit  <- unique(df_plot$tipo_media)[1]
+
+      g1b <- ggplot(df_plot, aes(x=momento_f, y=emmean, fill=momento_f)) +
+        geom_col(width=0.55, alpha=0.88, color=NA) +
         geom_errorbar(aes(ymin=lower.CL, ymax=upper.CL),
                       width=0.18, linewidth=1.2, color="grey30") +
-        geom_text(aes(label=sprintf("%.1f%%", emmean)),
-                  vjust=-0.6, size=5, fontface="bold",
-                  color=c(COL_PRE, COL_POST)) +
-        annotate("text", x=1.5, y=max(df_em_pre_post$upper.CL)+5,
-                 label=sprintf("Δ = %+.1f pp  (d_aj=%.2f | d_crudo=%.2f)",
+        geom_text(aes(label=sprintf("%.1f%%", emmean), color=momento_f),
+                  vjust=-0.7, size=5.5, fontface="bold") +
+        annotate("text", x=1.5, y=min(max(df_plot$upper.CL, na.rm=TRUE)+8, 108),
+                 label=sprintf("Δ = %+.1f pp  |  d_aj=%.2f  |  d_obs=%.2f",
                                delta_aj,
-                               ifelse(is.na(d_cohen_aj),0,d_cohen_aj),
-                               ifelse(is.na(d_cohen),0,d_cohen)),
-                 size=4.5, fontface="bold", color="#333333") +
-        scale_fill_manual(values=COL_MOM)  +
-        scale_y_continuous(labels=label_number(suffix="%"), limits=c(0,110)) +
-        labs(title=tit("Medias marginales ajustadas — PRE vs POST"),
-             subtitle="Estimadas por el modelo multinivel M1 | IC 95% | controlando estructura escolar",
+                               ifelse(is.na(d_cohen_aj), 0, d_cohen_aj),
+                               ifelse(is.na(d_cohen),    0, d_cohen)),
+                 size=4, fontface="bold", color="#333333") +
+        scale_fill_manual(values=COL_MOM, guide="none") +
+        scale_color_manual(values=COL_MOM, guide="none") +
+        scale_y_continuous(labels=label_number(suffix="%"),
+                           limits=c(0, 112), expand=c(0,0)) +
+        labs(title=tit(paste("Medias", tipo_tit, "— PRE vs POST")),
+             subtitle="IC 95% | controlando estructura de anidamiento escolar",
              x=NULL, y="PMP estimado (%)") +
-        theme(legend.position="none",
-              axis.text.x=element_text(size=13,face="bold",color=c(COL_PRE,COL_POST)))
+        theme(axis.text.x=element_text(size=13, face="bold"))
       guardar_g(g1b, gg("G1b_medias_ajustadas_PRE_POST.png"), 7, 6)
     }
   }
