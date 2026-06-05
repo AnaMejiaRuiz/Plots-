@@ -460,9 +460,25 @@ analizar_mlm <- function(nm) {
   df_pre$PMP <- calcular_pmp_individuo(df_pre_num, items_pre)
 
   if (!is.null(df_post)) {
-    items_post  <- intersect(cfg$items, names(df_post))
-    df_post_num <- as.data.frame(lapply(df_post[,items_post,drop=FALSE], recodificar))
+    items_post <- intersect(cfg$items, names(df_post))
+    if (length(items_post) == 0) {
+      # Intento con coincidencia sin distinción de mayúsculas/minúsculas
+      items_post <- cfg$items[tolower(cfg$items) %in% tolower(names(df_post))]
+      if (length(items_post) > 0) {
+        # Renombrar columnas del POST para que coincidan exactamente con los ítems esperados
+        idx <- match(tolower(items_post), tolower(names(df_post)))
+        names(df_post)[idx] <- items_post
+      }
+    }
+    if (length(items_post) == 0) {
+      cat(sprintf("  !! ADVERTENCIA: 0 ítems de cfg$items encontrados en POST. Primeras cols POST: %s\n",
+                  paste(head(names(df_post), 8), collapse=", ")))
+    }
+    df_post_num <- as.data.frame(lapply(df_post[, items_post, drop=FALSE], recodificar))
     df_post$PMP <- calcular_pmp_individuo(df_post_num, items_post)
+    n_pmp_ok <- sum(is.finite(df_post$PMP))
+    if (n_pmp_ok == 0)
+      cat(sprintf("  !! ADVERTENCIA: PMP_post todo NA (%d ítems POST usados)\n", length(items_post)))
   }
 
   cat(sprintf("  PRE: n=%d | PMP_pre=%.1f%% (SD=%.1f)\n",
@@ -825,12 +841,37 @@ analizar_mlm <- function(nm) {
 
   # Medias marginales estimadas por nivel (si aplica)
   emmeans_nivel <- NULL
-  if (!is.null(nivel_col) && !is.null(MODELOS$M2_nivel)) {
-    emmeans_nivel <- tryCatch(
-      as.data.frame(emmeans(MODELOS$M2_nivel,
-                             specs=c("momento", nivel_col),
-                             at=list(momento=c(0,1)))),
-      error=function(e) NULL)
+  if (!is.null(nivel_col)) {
+    # Fuente 1: emmeans del modelo M2_nivel (ajustado por MLM)
+    if (!is.null(MODELOS$M2_nivel)) {
+      emmeans_nivel <- tryCatch({
+        em_niv <- as.data.frame(emmeans(MODELOS$M2_nivel,
+                                        specs=c("momento", nivel_col),
+                                        at=list(momento=c(0,1))))
+        em_niv
+      }, error=function(e) {
+        cat(sprintf("  !! emmeans M2_nivel error: %s\n", conditionMessage(e)))
+        NULL
+      })
+    }
+    # Fuente 2: fallback — medias crudas agrupadas desde df_long
+    if (is.null(emmeans_nivel) && !is.null(df_long) &&
+        nivel_col %in% names(df_long) && tiene_post) {
+      emmeans_nivel <- tryCatch({
+        df_long %>%
+          filter(!is.na(PMP), !is.na(.data[[nivel_col]])) %>%
+          group_by(momento, .data[[nivel_col]]) %>%
+          summarise(n_obs=n(),
+                    emmean=mean(PMP, na.rm=TRUE),
+                    SE=sd(PMP, na.rm=TRUE)/sqrt(n()),
+                    .groups="drop") %>%
+          mutate(lower.CL=emmean-1.96*SE,
+                 upper.CL=emmean+1.96*SE,
+                 fuente="cruda")
+      }, error=function(e) NULL)
+      if (!is.null(emmeans_nivel))
+        cat("  Usando medias crudas (fallback) para G6 por nivel.\n")
+    }
   }
 
   # ── GUARDAR TABLAS ────────────────────────────────────────────────────────
@@ -965,6 +1006,12 @@ analizar_mlm <- function(nm) {
   # Fuente 2 (fallback):  medias crudas de df_pre / df_post directamente
   tryCatch({
     if (tiene_post) {
+      n_pmp_pre_ok  <- sum(is.finite(df_pre$PMP))
+      n_pmp_post_ok <- if (!is.null(df_post)) sum(is.finite(df_post$PMP)) else 0
+      cat(sprintf("  G1b: PMP válidos — PRE=%d  POST=%d  M1_tiempo=%s\n",
+                  n_pmp_pre_ok, n_pmp_post_ok,
+                  if(!is.null(MODELOS$M1_tiempo)) "OK" else "NULL"))
+
       # --- Construir tabla de medias ---
       df_em_pre_post <- NULL
 
@@ -977,13 +1024,17 @@ analizar_mlm <- function(nm) {
           em$tipo_media  <- "Ajustada (MLM)"
           em$momento_f   <- factor(em$momento_lbl, levels=c("PRE","POST"))
           em
-        }, error=function(e) NULL)
+        }, error=function(e) {
+          cat(sprintf("  G1b emmeans error: %s\n", conditionMessage(e)))
+          NULL
+        })
       }
 
-      # Intento 2: medias crudas desde df_pre y df_post (siempre disponibles)
+      # Intento 2: medias crudas desde df_pre y df_post directamente
       if (is.null(df_em_pre_post) ||
           !any(is.finite(df_em_pre_post$emmean))) {
         media_f <- function(df_x, mom_num, mom_lbl) {
+          if (is.null(df_x)) return(NULL)
           v  <- df_x$PMP[is.finite(df_x$PMP)]
           if (length(v) < 2) return(NULL)
           m  <- mean(v); se <- sd(v)/sqrt(length(v))
@@ -995,8 +1046,14 @@ analizar_mlm <- function(nm) {
         }
         em_pre  <- media_f(df_pre,  0L, "PRE")
         em_post <- media_f(df_post, 1L, "POST")
-        if (!is.null(em_pre) && !is.null(em_post))
+        if (!is.null(em_pre) && !is.null(em_post)) {
           df_em_pre_post <- bind_rows(em_pre, em_post)
+          cat("  G1b usando medias crudas (fallback).\n")
+        } else {
+          cat(sprintf("  !! G1b fallback falló: em_pre=%s  em_post=%s\n",
+                      if(is.null(em_pre)) "NULL" else "OK",
+                      if(is.null(em_post)) "NULL (PMP_post todo NA?)" else "OK"))
+        }
       }
 
       # --- Graficar si hay datos válidos ---
