@@ -255,7 +255,9 @@ tabla_efectos_fijos <- function(modelo, nombre_modelo) {
 tabla_varianza <- function(modelo, nombre_modelo) {
   if (is.null(modelo)) return(NULL)
   vc <- as.data.frame(VarCorr(modelo)) %>%
-    mutate(modelo=nombre_modelo, sd=round(sqrt(vcov),3), vcov=round(vcov,3))
+    mutate(modelo=nombre_modelo,
+           sd   = round(sqrt(pmax(vcov, 0)), 3),  # pmax evita sqrt de negativos
+           vcov = round(vcov, 3))
   vc[, c("modelo","grp","var1","vcov","sd")]
 }
 
@@ -985,7 +987,8 @@ analizar_mlm <- function(nm) {
       em
     }, error=function(e) NULL)
 
-    if (!is.null(df_em_pre_post) && nrow(df_em_pre_post)==2) {
+    if (!is.null(df_em_pre_post) && nrow(df_em_pre_post)==2 &&
+        any(is.finite(df_em_pre_post$emmean))) {
       add_ws("Medias_Ajustadas_PRE_POST", df_em_pre_post)
       write.csv(df_em_pre_post,
         file.path(dir_nm,"TABLAS",paste0(nm,"_medias_ajustadas.csv")),
@@ -1005,7 +1008,8 @@ analizar_mlm <- function(nm) {
                       width=0.18, linewidth=1.2, color="grey30") +
         geom_text(aes(label=sprintf("%.1f%%", emmean), color=momento_f),
                   vjust=-0.7, size=5.5, fontface="bold") +
-        annotate("text", x=1.5, y=min(max(df_plot$upper.CL, na.rm=TRUE)+8, 108),
+        annotate("text", x=1.5, y=min(max(df_plot$upper.CL[is.finite(df_plot$upper.CL)],
+                                          default=max(df_plot$emmean,na.rm=TRUE))+8, 108),
                  label=sprintf("Δ = %+.1f pp  |  d_aj=%.2f  |  d_obs=%.2f",
                                delta_aj,
                                ifelse(is.na(d_cohen_aj), 0, d_cohen_aj),
