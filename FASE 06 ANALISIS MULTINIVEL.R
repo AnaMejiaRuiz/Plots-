@@ -318,31 +318,59 @@ extraer_blups <- function(modelo, nivel_grupo="CCT") {
 }
 
 # ---------------------------------------------------------------------------- #
-# 5. CONFIGURACIÓN DE INSTRUMENTOS
+# 5. LEER SELECCIÓN DE VARIABLES DESDE FASE 5
 # ---------------------------------------------------------------------------- #
-# Variables seleccionadas en FASE 5 (solo las marcadas como INCLUIR)
-# Se organizan por nivel para cada modelo
+# Se incluyen variables con decisión "INCLUIR" y "REVISAR"/"REVISION" —
+# estas últimas pasan al modelo para evaluar su significancia estadística.
+# Si el archivo no existe, se usan los vectores de respaldo definidos abajo.
 
-VARS_L1_EST <- c(
-  # CTX_EST (individuo estudiante) — centrado CWC
-  "Q17","Q18","Q19","Q38","Q40","Q41","Q42","Q43","Q46","Q49"
-)
-VARS_L1_DOC <- c(
-  # CTX_DOC (individuo docente) — centrado CWC
-  "Q9","Q12","Q17","Q20","Q24","Q44","Q45","Q46","Q47","Q48","Q49","Q50","Q51"
-)
-VARS_L2_EST_DIR <- c(
-  # CTX_DIR agregado a escuela → modelo estudiantes — centrado CGM
-  "Q32","Q37","Q38","Q39","Q40","Q42","Q43","Q65","Q66"
-)
-VARS_L2_EST_DOC_AGG <- c(
-  # CTX_DOC agregado a escuela → modelo estudiantes — media escolar
-  "Q49","Q50","Q54"
-)
-VARS_L2_DOC_DIR <- c(
-  # CTX_DIR → modelo docentes — centrado CGM
-  "Q32","Q37","Q38","Q39","Q40","Q42","Q65","Q66"
-)
+archivo_f5 <- file.path(ruta_f5, "TABLAS", "F5_decision_global.csv")
+
+cargar_vars_f5 <- function(archivo) {
+  if (!file.exists(archivo)) {
+    cat("  !! F5_decision_global.csv no encontrado — usando vectores de respaldo\n")
+    return(NULL)
+  }
+  df <- read.csv(archivo, stringsAsFactors=FALSE)
+  # Normalizar nombre de columna decision (REVISION o REVISAR → mismo grupo)
+  df$decision <- trimws(toupper(df$decision))
+  df$decision[df$decision == "REVISAR"] <- "REVISION"
+  # Filtrar: INCLUIR + REVISION
+  df %>% filter(decision %in% c("INCLUIR","REVISION"))
+}
+
+df_f5 <- cargar_vars_f5(archivo_f5)
+
+extraer_vars <- function(df_f5, modelo_col, nivel_patron) {
+  # Devuelve vector de nombres de columna (col) que coinciden con el patrón de nivel
+  if (is.null(df_f5)) return(character(0))
+  df_f5 %>%
+    filter(!is.na(.data[[modelo_col]]),
+           grepl(nivel_patron, .data[[modelo_col]], ignore.case=TRUE)) %>%
+    pull(col) %>% unique()
+}
+
+if (!is.null(df_f5)) {
+  VARS_L1_DOC     <- extraer_vars(df_f5, "modelo_docentes",    "L1")
+  VARS_L2_DOC_DIR <- extraer_vars(df_f5, "modelo_docentes",    "L2")
+  VARS_L1_EST     <- extraer_vars(df_f5, "modelo_estudiantes", "L1")
+  VARS_L2_EST_DIR <- extraer_vars(df_f5, "modelo_estudiantes", "L2")
+
+  cat(sprintf("  Vars F5 cargadas — DOC_L1:%d  DOC_L2:%d  EST_L1:%d  EST_L2:%d\n",
+              length(VARS_L1_DOC), length(VARS_L2_DOC_DIR),
+              length(VARS_L1_EST), length(VARS_L2_EST_DIR)))
+
+  # Columnas que debe cargar CTX_DIR para L2 (siempre incluir CCT y Nivel)
+  CTX_DIR_VARS <- unique(c("CCT","Nivel", VARS_L2_DOC_DIR, VARS_L2_EST_DIR))
+} else {
+  # ── Respaldo: vectores hardcoded si no hay output de FASE 5 ──────────────
+  VARS_L1_EST <- c("Q17","Q18","Q19","Q38","Q40","Q41","Q42","Q43","Q46","Q49")
+  VARS_L1_DOC <- c("Q9","Q12","Q17","Q20","Q24","Q44","Q45","Q46","Q47","Q48",
+                   "Q49","Q50","Q51")
+  VARS_L2_EST_DIR <- c("Q32","Q37","Q38","Q39","Q40","Q42","Q43","Q65","Q66")
+  VARS_L2_DOC_DIR <- c("Q32","Q37","Q38","Q39","Q40","Q42","Q65","Q66")
+  CTX_DIR_VARS    <- c("CCT","Q32","Q37","Q38","Q39","Q40","Q42","Q43","Q65","Q66","Nivel")
+}
 
 INSTRUMENTOS <- list(
   HD_DOC = list(
@@ -355,8 +383,6 @@ INSTRUMENTOS <- list(
     figura="Estudiante", tipo_modelo="estudiantes",
     archivo_pre="HD_EST_pre.xlsx", archivo_post="HD_EST_post.xlsx",
     folio="Folio", cct="CCT", nivel="Nivel",
-    # nivel_anidamiento: col que forma el L2 dentro de escuela
-    # HD_EST tiene "Nivel" (Primaria/Secundaria/Prepa); Grado se une desde CTX_EST
     nivel_anidamiento="Nivel",
     items=paste0("Q",16:97),
     vars_l1=VARS_L1_EST, vars_l2=VARS_L2_EST_DIR),
@@ -380,9 +406,6 @@ INSTRUMENTOS <- list(
     items=paste0("Q",16:60),
     vars_l1=VARS_L1_EST, vars_l2=VARS_L2_EST_DIR)
 )
-
-# CTX_DIR (para variables L2 de contexto escolar)
-CTX_DIR_VARS <- c("CCT","Q32","Q37","Q38","Q39","Q40","Q42","Q43","Q65","Q66","Nivel")
 
 # ---------------------------------------------------------------------------- #
 # 6. FUNCIÓN AUXILIAR: CENTRADO DE VARIABLES
@@ -846,6 +869,45 @@ analizar_mlm <- function(nm) {
   # Tabla de efectos fijos del mejor modelo (limpia y lista para reporte)
   ef_mejor <- tabla_efectos_fijos(mejor_modelo, "MEJOR MODELO")
   if (!is.null(ef_mejor)) add_ws("Efectos_Mejor_Modelo", ef_mejor)
+
+  # ── Tabla de decisión final para variables REVISION ───────────────────────
+  # Indica qué variables de "REVISAR" resultaron significativas en el modelo
+  if (!is.null(df_f5) && !is.null(ef_mejor)) {
+    vars_revision <- df_f5 %>%
+      filter(decision == "REVISION") %>%
+      pull(col) %>% unique()
+
+    tipo_mod <- cfg$tipo_modelo
+    vars_revision_modelo <- if (tipo_mod == "docentes")
+      intersect(vars_revision, c(VARS_L1_DOC, VARS_L2_DOC_DIR))
+    else
+      intersect(vars_revision, c(VARS_L1_EST, VARS_L2_EST_DIR))
+
+    if (length(vars_revision_modelo) > 0) {
+      # Buscar estas variables en los efectos fijos (pueden aparecer como _cwc o _cgm)
+      ef_rev <- ef_mejor %>%
+        filter(sapply(predictor, function(p)
+          any(sapply(vars_revision_modelo, function(v)
+            grepl(v, p, fixed=TRUE))))) %>%
+        mutate(
+          decision_f5   = "REVISION",
+          significativa = ifelse(p_valor < 0.05, "SÍ", "NO"),
+          recomendacion = case_when(
+            p_valor < 0.05 ~ "INCLUIR — significativa en el modelo",
+            p_valor < 0.10 ~ "CONSIDERAR — tendencia marginal (p<.10)",
+            TRUE           ~ "EXCLUIR — no significativa"
+          )
+        )
+      if (nrow(ef_rev) > 0) {
+        add_ws("Decision_Variables_REVISION", ef_rev)
+        write.csv(ef_rev,
+          file.path(dir_nm,"TABLAS",paste0(nm,"_decision_REVISION.csv")),
+          row.names=FALSE)
+        cat(sprintf("  Variables REVISION evaluadas: %d | Significativas: %d\n",
+                    nrow(ef_rev), sum(ef_rev$p_valor < 0.05, na.rm=TRUE)))
+      }
+    }
+  }
 
   tryCatch(saveWorkbook(wb, file.path(dir_nm,"TABLAS",
              paste0(nm,"_MLM_resultados.xlsx")),overwrite=TRUE),error=function(e)NULL)
