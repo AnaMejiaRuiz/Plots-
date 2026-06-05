@@ -961,71 +961,90 @@ analizar_mlm <- function(nm) {
   }, error=function(e) cat(sprintf("  !! G1 error: %s\n", conditionMessage(e))))
 
   # G1b: Medias marginales AJUSTADAS PRE vs POST
-  # Fuente: emmeans de M1_tiempo si está disponible; si no, medias crudas de df_long
-  if (tiene_post) {
-    df_em_pre_post <- tryCatch({
-      modelo_tiempo <- MODELOS$M1_tiempo
-      if (!is.null(modelo_tiempo)) {
-        em <- as.data.frame(emmeans(modelo_tiempo, ~momento,
-                                     at=list(momento=c(0,1))))
-        em$momento_lbl <- ifelse(em$momento==0,"PRE","POST")
-        em$tipo_media  <- "Ajustada (MLM)"
-      } else {
-        # Fallback: medias crudas con IC bootstrap simple
-        em <- df_long %>%
-          filter(!is.na(PMP), momento_lbl %in% c("PRE","POST")) %>%
-          group_by(momento_lbl) %>%
-          summarise(emmean  = mean(PMP, na.rm=TRUE),
-                    SE      = sd(PMP, na.rm=TRUE)/sqrt(n()),
-                    lower.CL = emmean - 1.96*SE,
-                    upper.CL = emmean + 1.96*SE,
-                    momento  = first(momento),
-                    .groups="drop")
-        em$tipo_media <- "Cruda (sin ajuste MLM)"
+  # Fuente 1 (preferida): emmeans de M1_tiempo — medias ajustadas por el modelo MLM
+  # Fuente 2 (fallback):  medias crudas de df_pre / df_post directamente
+  tryCatch({
+    if (tiene_post) {
+      # --- Construir tabla de medias ---
+      df_em_pre_post <- NULL
+
+      # Intento 1: emmeans del modelo con momento
+      modelo_t <- MODELOS$M1_tiempo
+      if (!is.null(modelo_t)) {
+        df_em_pre_post <- tryCatch({
+          em <- as.data.frame(emmeans(modelo_t, ~momento, at=list(momento=c(0,1))))
+          em$momento_lbl <- ifelse(em$momento==0,"PRE","POST")
+          em$tipo_media  <- "Ajustada (MLM)"
+          em$momento_f   <- factor(em$momento_lbl, levels=c("PRE","POST"))
+          em
+        }, error=function(e) NULL)
       }
-      em$momento_f <- factor(em$momento_lbl, levels=c("PRE","POST"))
-      em
-    }, error=function(e) NULL)
 
-    if (!is.null(df_em_pre_post) && nrow(df_em_pre_post)==2 &&
-        any(is.finite(df_em_pre_post$emmean))) {
-      add_ws("Medias_Ajustadas_PRE_POST", df_em_pre_post)
-      write.csv(df_em_pre_post,
-        file.path(dir_nm,"TABLAS",paste0(nm,"_medias_ajustadas.csv")),
-        row.names=FALSE)
+      # Intento 2: medias crudas desde df_pre y df_post (siempre disponibles)
+      if (is.null(df_em_pre_post) ||
+          !any(is.finite(df_em_pre_post$emmean))) {
+        media_f <- function(df_x, mom_num, mom_lbl) {
+          v  <- df_x$PMP[is.finite(df_x$PMP)]
+          if (length(v) < 2) return(NULL)
+          m  <- mean(v); se <- sd(v)/sqrt(length(v))
+          data.frame(emmean=m, SE=se, df=length(v)-1,
+                     lower.CL=m-1.96*se, upper.CL=m+1.96*se,
+                     momento=mom_num, momento_lbl=mom_lbl,
+                     tipo_media="Cruda (sin ajuste MLM)",
+                     momento_f=factor(mom_lbl, levels=c("PRE","POST")))
+        }
+        em_pre  <- media_f(df_pre,  0L, "PRE")
+        em_post <- media_f(df_post, 1L, "POST")
+        if (!is.null(em_pre) && !is.null(em_post))
+          df_em_pre_post <- bind_rows(em_pre, em_post)
+      }
 
-      df_plot <- df_em_pre_post %>%
-        arrange(momento_f) %>%
-        mutate(color_barra = c(COL_PRE, COL_POST))
+      # --- Graficar si hay datos válidos ---
+      if (!is.null(df_em_pre_post) && nrow(df_em_pre_post)==2 &&
+          any(is.finite(df_em_pre_post$emmean))) {
 
-      delta_aj  <- round(df_plot$emmean[df_plot$momento_f=="POST"] -
-                          df_plot$emmean[df_plot$momento_f=="PRE"], 2)
-      tipo_tit  <- unique(df_plot$tipo_media)[1]
+        add_ws("Medias_Ajustadas_PRE_POST", df_em_pre_post)
+        write.csv(df_em_pre_post,
+          file.path(dir_nm,"TABLAS",paste0(nm,"_medias_ajustadas.csv")),
+          row.names=FALSE)
 
-      g1b <- ggplot(df_plot, aes(x=momento_f, y=emmean, fill=momento_f)) +
-        geom_col(width=0.55, alpha=0.88, color=NA) +
-        geom_errorbar(aes(ymin=lower.CL, ymax=upper.CL),
-                      width=0.18, linewidth=1.2, color="grey30") +
-        geom_text(aes(label=sprintf("%.1f%%", emmean), color=momento_f),
-                  vjust=-0.7, size=5.5, fontface="bold") +
-        annotate("text", x=1.5, y=min(max(df_plot$upper.CL[is.finite(df_plot$upper.CL)],
-                                          default=max(df_plot$emmean,na.rm=TRUE))+8, 108),
-                 label=sprintf("Δ = %+.1f pp  |  d_aj=%.2f  |  d_obs=%.2f",
-                               delta_aj,
-                               ifelse(is.na(d_cohen_aj), 0, d_cohen_aj),
-                               ifelse(is.na(d_cohen),    0, d_cohen)),
-                 size=4, fontface="bold", color="#333333") +
-        scale_fill_manual(values=COL_MOM, guide="none") +
-        scale_color_manual(values=COL_MOM, guide="none") +
-        scale_y_continuous(labels=label_number(suffix="%"),
-                           limits=c(0, 112), expand=c(0,0)) +
-        labs(title=tit(paste("Medias", tipo_tit, "— PRE vs POST")),
-             subtitle="IC 95% | controlando estructura de anidamiento escolar",
-             x=NULL, y="PMP estimado (%)") +
-        theme(axis.text.x=element_text(size=13, face="bold"))
-      guardar_g(g1b, gg("G1b_medias_ajustadas_PRE_POST.png"), 7, 6)
+        df_plot  <- df_em_pre_post %>% arrange(momento_f)
+        delta_aj <- round(df_plot$emmean[df_plot$momento_f=="POST"] -
+                           df_plot$emmean[df_plot$momento_f=="PRE"], 2)
+        tipo_tit <- unique(df_plot$tipo_media)[1]
+
+        # Posición segura para la etiqueta de delta
+        cl_fin <- df_plot$upper.CL[is.finite(df_plot$upper.CL)]
+        y_anot <- min(ifelse(length(cl_fin)>0, max(cl_fin)+8,
+                             max(df_plot$emmean, na.rm=TRUE)+10), 108)
+
+        g1b <- ggplot(df_plot, aes(x=momento_f, y=emmean, fill=momento_f)) +
+          geom_col(width=0.55, alpha=0.88, color=NA) +
+          geom_errorbar(aes(ymin=lower.CL, ymax=upper.CL),
+                        width=0.18, linewidth=1.2, color="grey30",
+                        na.rm=TRUE) +
+          geom_text(aes(label=sprintf("%.1f%%", emmean), color=momento_f),
+                    vjust=-0.7, size=5.5, fontface="bold") +
+          annotate("text", x=1.5, y=y_anot,
+                   label=sprintf("Δ = %+.1f pp  |  d_aj=%.2f  |  d_obs=%.2f",
+                                 delta_aj,
+                                 ifelse(is.na(d_cohen_aj),0,d_cohen_aj),
+                                 ifelse(is.na(d_cohen),   0,d_cohen)),
+                   size=4, fontface="bold", color="#333333") +
+          scale_fill_manual(values=COL_MOM, guide="none") +
+          scale_color_manual(values=COL_MOM, guide="none") +
+          scale_y_continuous(labels=label_number(suffix="%"),
+                             limits=c(0,112), expand=c(0,0)) +
+          labs(title=tit(paste("Medias", tipo_tit, "— PRE vs POST")),
+               subtitle="IC 95% | controlando estructura de anidamiento escolar",
+               x=NULL, y="PMP estimado (%)") +
+          theme(axis.text.x=element_text(size=13, face="bold"))
+        guardar_g(g1b, gg("G1b_medias_ajustadas_PRE_POST.png"), 7, 6)
+      } else {
+        cat("  !! G1b: no se pudieron calcular medias PRE/POST válidas\n")
+      }
     }
-  }
+  }, error=function(e) cat(sprintf("  !! G1b error: %s\n", conditionMessage(e))))
 
   # G2: ICC y componentes de varianza (modelo nulo)
   tryCatch({
