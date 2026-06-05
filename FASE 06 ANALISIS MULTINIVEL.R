@@ -929,32 +929,34 @@ analizar_mlm <- function(nm) {
   tit <- function(v) paste(v,"—",nm)
   gg  <- function(p) file.path(dir_nm,"GRAFICOS",p)
 
-  # G1: PMP PRE vs POST (violin + boxplot + puntos) — puntajes CRUDOS
-  if (!is.null(df_long)) {
-    momentos_presentes <- unique(df_long$momento_lbl)
-    df_viol <- df_long %>% filter(!is.na(PMP)) %>%
-      mutate(momento_f=factor(momento_lbl, levels=c("PRE","POST")))
-    n_momentos <- n_distinct(df_viol$momento_f)
-    g1 <- ggplot(df_viol, aes(x=momento_f, y=PMP, fill=momento_f)) +
-      geom_violin(alpha=0.35, width=0.8, color=NA) +
-      geom_boxplot(width=0.25, outlier.size=0.8, alpha=0.85,
-                   color="grey30", linewidth=0.5) +
-      stat_summary(fun=mean, geom="point", shape=18,
-                   size=4, color="white") +
-      stat_summary(fun=mean, geom="text",
-                   aes(label=sprintf("%.1f%%",after_stat(y))),
-                   vjust=-1.2, size=3.5, fontface="bold") +
-      scale_fill_manual(values=COL_MOM, name="Momento") +
-      scale_y_continuous(labels=label_number(suffix="%"), limits=c(0,105)) +
-      labs(title=tit("Distribución PMP — PRE vs POST (puntajes crudos)"),
-           subtitle=sprintf("n_pre=%d | n_post=%d | d_Cohen=%.2f",
-                            nrow(df_pre), if(!is.null(df_post))nrow(df_post) else 0,
-                            ifelse(is.na(d_cohen),0,d_cohen)),
-           x=NULL, y="PMP (%)") +
-      theme(legend.position="none",
-            axis.text.x=element_text(size=12,face="bold"))
-    guardar_g(g1, gg("G1_violin_PMP.png"), 7, 6)
-  }
+  # G1: PMP PRE vs POST (violin + boxplot) — puntajes CRUDOS
+  tryCatch({
+    if (!is.null(df_long) && nrow(df_long) > 0) {
+      df_viol <- df_long %>% filter(!is.na(PMP)) %>%
+        mutate(momento_f=factor(momento_lbl, levels=intersect(c("PRE","POST"),
+                                                               unique(momento_lbl))))
+      momentos_ok <- levels(df_viol$momento_f)
+      colores_ok  <- COL_MOM[momentos_ok]
+      g1 <- ggplot(df_viol, aes(x=momento_f, y=PMP, fill=momento_f)) +
+        geom_violin(alpha=0.35, width=0.8, color=NA) +
+        geom_boxplot(width=0.25, outlier.size=0.8, alpha=0.85,
+                     color="grey30", linewidth=0.5) +
+        stat_summary(fun=mean, geom="point", shape=18, size=4, color="white") +
+        stat_summary(fun=mean, geom="text",
+                     aes(label=sprintf("%.1f%%",after_stat(y))),
+                     vjust=-1.2, size=3.5, fontface="bold") +
+        scale_fill_manual(values=colores_ok, name="Momento") +
+        scale_y_continuous(labels=label_number(suffix="%"), limits=c(0,108)) +
+        labs(title=tit("Distribución PMP — PRE vs POST (puntajes crudos)"),
+             subtitle=sprintf("n_pre=%d | n_post=%d | d_Cohen=%.2f",
+                              nrow(df_pre), if(!is.null(df_post))nrow(df_post) else 0,
+                              ifelse(is.na(d_cohen),0,d_cohen)),
+             x=NULL, y="PMP (%)") +
+        theme(legend.position="none",
+              axis.text.x=element_text(size=12,face="bold"))
+      guardar_g(g1, gg("G1_violin_PMP.png"), 7, 6)
+    }
+  }, error=function(e) cat(sprintf("  !! G1 error: %s\n", conditionMessage(e))))
 
   # G1b: Medias marginales AJUSTADAS PRE vs POST
   # Fuente: emmeans de M1_tiempo si está disponible; si no, medias crudas de df_long
@@ -1022,111 +1024,131 @@ analizar_mlm <- function(nm) {
   }
 
   # G2: ICC y componentes de varianza (modelo nulo)
-  modelo_nulo_g2 <- if(!is.null(MODELOS$M0_nulo_3niv)) MODELOS$M0_nulo_3niv
-                    else if(!is.null(MODELOS$M0_nulo_2niv)) MODELOS$M0_nulo_2niv
-                    else MODELOS$M0_nulo
-  if (!is.null(modelo_nulo_g2)) {
-    vc_n <- as.data.frame(VarCorr(modelo_nulo_g2))
-    icc_esc <- coalesce(icc_res$icc_escuela, 0)
-    df_var <- data.frame(
-      componente=c(paste0("Entre escuelas (L2)\nCCT"),
-                   "Dentro escuelas (L1)\nResidual"),
-      varianza=c(vc_n$vcov[vc_n$grp!="Residual"][1],
-                  vc_n$vcov[vc_n$grp=="Residual"]),
-      pct=round(c(icc_esc,(1-icc_esc))*100,1)
-    )
-    g2 <- ggplot(df_var, aes(x="", y=varianza, fill=componente)) +
-      geom_col(color="white", linewidth=0.8) +
-      geom_text(aes(label=sprintf("%.1f%%\n(%s)",pct,componente)),
-                position=position_stack(vjust=0.5),
-                size=3.5, fontface="bold", color="white") +
-      coord_polar(theta="y") +
-      scale_fill_manual(values=c(COL_POST,COL_PRE)) +
-      labs(title=tit("Descomposición de varianza (Modelo Nulo)"),
-           subtitle=sprintf("ICC = %.3f → %.1f%% de varianza entre escuelas",
-                            icc_esc, icc_esc*100)) +
-      theme_void() + theme(plot.title=element_text(size=11,face="bold",hjust=0.5),
-                            plot.subtitle=element_text(size=9,color="#555",hjust=0.5),
-                            legend.position="none")
-    guardar_g(g2, gg("G2_varianza_ICC.png"), 7, 7)
-  }
+  tryCatch({
+    modelo_nulo_g2 <- if(!is.null(MODELOS$M0_nulo_3niv)) MODELOS$M0_nulo_3niv
+                      else if(!is.null(MODELOS$M0_nulo_2niv)) MODELOS$M0_nulo_2niv
+                      else MODELOS$M0_nulo
+    if (!is.null(modelo_nulo_g2)) {
+      vc_n    <- as.data.frame(VarCorr(modelo_nulo_g2))
+      icc_esc <- coalesce(icc_res$icc_escuela, 0)
+      var_entre <- vc_n$vcov[vc_n$grp!="Residual"]
+      var_dentro <- vc_n$vcov[vc_n$grp=="Residual"]
+      if (length(var_entre)>0 && length(var_dentro)>0) {
+        df_var <- data.frame(
+          componente=c("Entre escuelas (L2)","Dentro escuelas (L1)\nResidual"),
+          varianza  =c(sum(var_entre), var_dentro[1]),
+          pct       =round(c(icc_esc, 1-icc_esc)*100, 1))
+        g2 <- ggplot(df_var, aes(x="", y=varianza, fill=componente)) +
+          geom_col(color="white", linewidth=0.8) +
+          geom_text(aes(label=sprintf("%.1f%%\n(%s)",pct,componente)),
+                    position=position_stack(vjust=0.5),
+                    size=3.5, fontface="bold", color="white") +
+          coord_polar(theta="y") +
+          scale_fill_manual(values=c(COL_POST,COL_PRE)) +
+          labs(title=tit("Descomposición de varianza (Modelo Nulo)"),
+               subtitle=sprintf("ICC = %.3f → %.1f%% varianza entre escuelas",
+                                icc_esc, icc_esc*100)) +
+          theme_void() +
+          theme(plot.title=element_text(size=11,face="bold",hjust=0.5),
+                plot.subtitle=element_text(size=9,color="#555",hjust=0.5),
+                legend.position="none")
+        guardar_g(g2, gg("G2_varianza_ICC.png"), 7, 7)
+      }
+    }
+  }, error=function(e) cat(sprintf("  !! G2 error: %s\n", conditionMessage(e))))
 
   # G3: Efectos fijos del mejor modelo (coefplot)
-  if (!is.null(ef_mejor) && nrow(ef_mejor)>1) {
-    df_ef <- ef_mejor %>% filter(predictor != "(Intercept)") %>%
-      mutate(sig_color=ifelse(p_valor<.05,"Significativo","No significativo"))
-    if (nrow(df_ef)>0) {
-      g3 <- ggplot(df_ef, aes(x=reorder(predictor,coef), y=coef, color=sig_color)) +
-        geom_hline(yintercept=0, linetype="dashed", color="#888888", linewidth=0.5) +
-        geom_errorbar(aes(ymin=ic_inf, ymax=ic_sup), width=0.3, linewidth=0.8) +
-        geom_point(size=4, alpha=0.95) +
-        geom_text(aes(label=sig), vjust=-0.9, size=4.5, color="grey30") +
-        scale_color_manual(values=c("Significativo"=COL_POST,
-                                     "No significativo"="#AAAAAA"),
-                           name="Significancia") +
-        coord_flip() +
-        labs(title=tit("Efectos fijos — Mejor modelo"),
-             subtitle="IC 95% Wald | * p<.05 | ** p<.01 | *** p<.001",
-             x=NULL, y="Coeficiente (puntos porcentuales de PMP)") +
-        theme(axis.text.y=element_text(size=8.5,face="bold"))
-      guardar_g(g3, gg("G3_coefplot.png"), 10, max(4,nrow(df_ef)*0.5+2))
+  tryCatch({
+    if (!is.null(ef_mejor) && nrow(ef_mejor)>1) {
+      df_ef <- ef_mejor %>% filter(predictor != "(Intercept)") %>%
+        mutate(sig_color=ifelse(p_valor<.05,"Significativo","No significativo"))
+      if (nrow(df_ef)>0) {
+        g3 <- ggplot(df_ef, aes(x=reorder(predictor,coef), y=coef, color=sig_color)) +
+          geom_hline(yintercept=0, linetype="dashed", color="#888888", linewidth=0.5) +
+          geom_errorbar(aes(ymin=ic_inf, ymax=ic_sup), width=0.3, linewidth=0.8) +
+          geom_point(size=4, alpha=0.95) +
+          geom_text(aes(label=sig), vjust=-0.9, size=4.5, color="grey30") +
+          scale_color_manual(values=c("Significativo"=COL_POST,"No significativo"="#AAAAAA"),
+                             name="Significancia") +
+          coord_flip() +
+          labs(title=tit("Efectos fijos — Mejor modelo"),
+               subtitle="IC 95% Wald | * p<.05 | ** p<.01 | *** p<.001",
+               x=NULL, y="Coeficiente (pp de PMP)") +
+          theme(axis.text.y=element_text(size=8.5,face="bold"))
+        guardar_g(g3, gg("G3_coefplot.png"), 10, max(4,nrow(df_ef)*0.5+2))
+      }
     }
-  }
+  }, error=function(e) cat(sprintf("  !! G3 error: %s\n", conditionMessage(e))))
 
   # G4: BLUPs por CCT (ranking de escuelas)
-  if (!is.null(blups_cct) && nrow(blups_cct)>0) {
-    df_blup <- blups_cct %>%
-      mutate(color=case_when(intercepto_random>2~"Alto",
-                              intercepto_random< -2~"Bajo",TRUE~"Promedio"),
-             CCT=factor(CCT, levels=CCT[order(intercepto_random)]))
-    g4 <- ggplot(df_blup, aes(x=CCT, y=intercepto_random, fill=color)) +
-      geom_col(width=0.75, alpha=0.88, color="white", linewidth=0.2) +
-      geom_hline(yintercept=0, linewidth=0.5, color="#444") +
-      geom_hline(yintercept=c(-2,2), linetype="dashed",
-                 color="#888888", linewidth=0.4) +
-      scale_fill_manual(values=c(Alto="#1A9641",Bajo="#D7191C",Promedio="#CCCCCC"),
-                        name="Desempeño") +
-      coord_flip() +
-      labs(title=tit("Efectos aleatorios por escuela (BLUPs)"),
-           subtitle="Desviación de cada escuela respecto a la media general | Líneas ±2 puntos",
-           x="CCT", y="Efecto aleatorio (pp de PMP)",
-           caption="BLUPs = Best Linear Unbiased Predictors | Estimaciones Bayes empírico") +
-      theme(axis.text.y=element_text(size=ifelse(nrow(df_blup)>40,5,7.5),
-                                      face="bold"))
-    guardar_g(g4, gg("G4_BLUPs_CCT.png"), 10, max(7,nrow(df_blup)*0.22+2))
-  }
+  tryCatch({
+    # Intentar BLUPs desde mejor_modelo; si falla, intentar desde null model
+    blups_g4 <- blups_cct
+    if (is.null(blups_g4) || nrow(blups_g4)==0) {
+      m_ref <- if(!is.null(MODELOS$M0_nulo_3niv)) MODELOS$M0_nulo_3niv
+               else if(!is.null(MODELOS$M0_nulo_2niv)) MODELOS$M0_nulo_2niv
+               else MODELOS$M0_nulo
+      blups_g4 <- extraer_blups(m_ref, cct_col)
+      if (!is.null(blups_g4)) {
+        blups_g4$Entidad    <- substr(as.character(blups_g4$CCT),1,2)
+        blups_g4$instrumento <- nm
+      }
+    }
+    if (!is.null(blups_g4) && nrow(blups_g4)>0) {
+      df_blup <- blups_g4 %>%
+        mutate(color=case_when(intercepto_random>2~"Alto",
+                               intercepto_random< -2~"Bajo",TRUE~"Promedio"),
+               CCT=factor(CCT,levels=CCT[order(intercepto_random)]))
+      g4 <- ggplot(df_blup, aes(x=CCT, y=intercepto_random, fill=color)) +
+        geom_col(width=0.75, alpha=0.88, color="white", linewidth=0.2) +
+        geom_hline(yintercept=0, linewidth=0.5, color="#444") +
+        geom_hline(yintercept=c(-2,2), linetype="dashed", color="#888888", linewidth=0.4) +
+        scale_fill_manual(values=c(Alto="#1A9641",Bajo="#D7191C",Promedio="#CCCCCC"),
+                          name="Desempeño") +
+        coord_flip() +
+        labs(title=tit("Efectos aleatorios por escuela (BLUPs)"),
+             subtitle="Desviación de cada escuela respecto a la media general | Líneas ±2 puntos",
+             x="CCT", y="Efecto aleatorio (pp de PMP)",
+             caption="BLUPs = Best Linear Unbiased Predictors") +
+        theme(axis.text.y=element_text(size=ifelse(nrow(df_blup)>40,5,7.5),face="bold"))
+      guardar_g(g4, gg("G4_BLUPs_CCT.png"), 10, max(7,nrow(df_blup)*0.22+2))
+    }
+  }, error=function(e) cat(sprintf("  !! G4 error: %s\n", conditionMessage(e))))
 
   # G5: BLUPs por Entidad (agregado)
-  if (!is.null(blups_cct) && "Entidad" %in% names(blups_cct) &&
-      n_distinct(blups_cct$Entidad)>1) {
-    df_ent <- blups_cct %>%
-      group_by(Entidad) %>%
-      summarise(blup_medio=round(mean(intercepto_random,na.rm=TRUE),3),
-                blup_sd   =round(sd(intercepto_random,na.rm=TRUE),3),
-                n_escuelas=n(), .groups="drop")
-    g5 <- ggplot(df_ent, aes(x=reorder(Entidad,blup_medio), y=blup_medio)) +
-      geom_errorbar(aes(ymin=blup_medio-blup_sd, ymax=blup_medio+blup_sd),
-                    width=0.4, color="#888888", linewidth=0.7) +
-      geom_point(aes(size=n_escuelas, color=blup_medio)) +
-      geom_hline(yintercept=0, linetype="dashed", color="#666", linewidth=0.5) +
-      geom_text(aes(label=sprintf("%.1f\n(n=%d)",blup_medio,n_escuelas)),
-                vjust=-0.7, size=3, fontface="bold") +
-      scale_color_gradient2(low="#D7191C",mid="grey",high="#1A9641",
-                             midpoint=0,name="BLUP medio") +
-      scale_size_continuous(range=c(3,8),name="N escuelas") +
-      coord_flip() +
-      labs(title=tit("Efectos por entidad (promedio de BLUPs)"),
-           subtitle="Cada punto = entidad | Barras = ±1 SD entre escuelas de la entidad",
-           x="Entidad (clave)", y="BLUP promedio (pp de PMP)") +
-      theme(axis.text.y=element_text(size=9,face="bold"))
-    guardar_g(g5, gg("G5_BLUPs_Entidad.png"), 10, 6)
-    write.csv(df_ent, file.path(dir_nm,"TABLAS",paste0(nm,"_BLUPs_Entidad.csv")),
-              row.names=FALSE)
-  }
+  tryCatch({
+    blups_g5 <- if(!is.null(blups_cct) && nrow(blups_cct)>0) blups_cct else NULL
+    if (!is.null(blups_g5) && "Entidad" %in% names(blups_g5) &&
+        n_distinct(blups_g5$Entidad)>1) {
+      df_ent <- blups_g5 %>%
+        group_by(Entidad) %>%
+        summarise(blup_medio=round(mean(intercepto_random,na.rm=TRUE),3),
+                  blup_sd   =round(sd(intercepto_random,na.rm=TRUE),3),
+                  n_escuelas=n(), .groups="drop")
+      g5 <- ggplot(df_ent, aes(x=reorder(Entidad,blup_medio), y=blup_medio)) +
+        geom_errorbar(aes(ymin=blup_medio-blup_sd, ymax=blup_medio+blup_sd),
+                      width=0.4, color="#888888", linewidth=0.7) +
+        geom_point(aes(size=n_escuelas, color=blup_medio)) +
+        geom_hline(yintercept=0, linetype="dashed", color="#666", linewidth=0.5) +
+        geom_text(aes(label=sprintf("%.1f\n(n=%d)",blup_medio,n_escuelas)),
+                  vjust=-0.7, size=3, fontface="bold") +
+        scale_color_gradient2(low="#D7191C",mid="grey",high="#1A9641",
+                               midpoint=0,name="BLUP medio") +
+        scale_size_continuous(range=c(3,8),name="N escuelas") +
+        coord_flip() +
+        labs(title=tit("Efectos por entidad (promedio de BLUPs)"),
+             subtitle="Cada punto = entidad | Barras = ±1 SD entre escuelas",
+             x="Entidad (clave)", y="BLUP promedio (pp de PMP)") +
+        theme(axis.text.y=element_text(size=9,face="bold"))
+      guardar_g(g5, gg("G5_BLUPs_Entidad.png"), 10, 6)
+      write.csv(df_ent, file.path(dir_nm,"TABLAS",paste0(nm,"_BLUPs_Entidad.csv")),
+                row.names=FALSE)
+    }
+  }, error=function(e) cat(sprintf("  !! G5 error: %s\n", conditionMessage(e))))
 
   # G6: Medias marginales por nivel × momento (emmeans)
-  if (!is.null(emmeans_nivel)) {
-    tryCatch({
+  tryCatch({
+    if (!is.null(emmeans_nivel)) {
       df_em <- emmeans_nivel %>%
         mutate(momento_lbl=ifelse(momento==0,"PRE","POST"),
                momento_f=factor(momento_lbl,levels=c("PRE","POST")))
@@ -1135,38 +1157,39 @@ analizar_mlm <- function(nm) {
         geom_col(position=position_dodge(0.75),width=0.7,alpha=0.85,
                  linewidth=0.3,color="white") +
         geom_errorbar(aes(ymin=lower.CL,ymax=upper.CL),
-                      position=position_dodge(0.75),width=0.3,linewidth=0.7)+
+                      position=position_dodge(0.75),width=0.3,linewidth=0.7) +
         geom_text(aes(label=sprintf("%.1f%%",emmean)),
-                  position=position_dodge(0.75),vjust=-0.4,size=3,fontface="bold")+
-        scale_fill_manual(values=COL_MOM,name="Momento")+
-        scale_color_manual(values=COL_MOM,guide="none")+
-        scale_y_continuous(limits=c(0,105),labels=label_number(suffix="%"))+
+                  position=position_dodge(0.75),vjust=-0.4,size=3,fontface="bold") +
+        scale_fill_manual(values=COL_MOM,name="Momento") +
+        scale_color_manual(values=COL_MOM,guide="none") +
+        scale_y_continuous(limits=c(0,108),labels=label_number(suffix="%")) +
         labs(title=tit("PMP estimado por nivel educativo y momento"),
              subtitle="Medias marginales estimadas (emmeans) | IC 95% ajustado",
-             x="Nivel educativo",y="PMP estimado (%)")+
+             x="Nivel educativo", y="PMP estimado (%)") +
         theme(axis.text.x=element_text(size=10,face="bold"))
       guardar_g(g6, gg("G6_emmeans_nivel.png"), 9, 6)
-    }, error=function(e) NULL)
-  }
+    }
+  }, error=function(e) cat(sprintf("  !! G6 error: %s\n", conditionMessage(e))))
 
   # G7: Cambio PRE-POST por CCT (dumbbell)
-  if (!is.null(df_long) && !is.null(blups_cct)) {
-    df_dumb <- df_long %>% filter(!is.na(PMP)) %>%
-      group_by(.data[[cct_col]], momento_lbl) %>%
-      summarise(pmp_medio=round(mean(PMP,na.rm=TRUE),1),.groups="drop") %>%
-      pivot_wider(names_from=momento_lbl,values_from=pmp_medio) %>%
-      filter(!is.na(PRE)&!is.na(POST)) %>%
-      mutate(delta=round(POST-PRE,1),
-             color_d=case_when(delta>3~"Mejora",delta< -3~"Deterioro",TRUE~"Estable"))
-    n_ccts_plot <- min(40, nrow(df_dumb))
-    df_dumb_p <- df_dumb %>%
-      arrange(desc(abs(delta))) %>% head(n_ccts_plot) %>%
-      mutate(CCT_lbl=factor(.data[[cct_col]],
-                             levels=.data[[cct_col]][order(PRE)]))
-    g7 <- ggplot(df_dumb_p) +
-      geom_segment(aes(x=PRE,xend=POST,
-                        y=CCT_lbl,yend=CCT_lbl,color=color_d),
-                   linewidth=1.5,alpha=0.6)+
+  tryCatch({
+    if (!is.null(df_long) && tiene_post) {
+      df_dumb <- df_long %>% filter(!is.na(PMP)) %>%
+        group_by(.data[[cct_col]], momento_lbl) %>%
+        summarise(pmp_medio=round(mean(PMP,na.rm=TRUE),1),.groups="drop") %>%
+        pivot_wider(names_from=momento_lbl,values_from=pmp_medio) %>%
+        filter(!is.na(PRE) & !is.na(POST)) %>%
+        mutate(delta=round(POST-PRE,1),
+               color_d=case_when(delta>3~"Mejora",delta< -3~"Deterioro",TRUE~"Estable"))
+      if (nrow(df_dumb)>0) {
+        n_ccts_plot <- min(40, nrow(df_dumb))
+        df_dumb_p <- df_dumb %>%
+          arrange(desc(abs(delta))) %>% head(n_ccts_plot) %>%
+          mutate(CCT_lbl=factor(.data[[cct_col]],
+                                levels=.data[[cct_col]][order(PRE)]))
+        g7 <- ggplot(df_dumb_p) +
+          geom_segment(aes(x=PRE,xend=POST,y=CCT_lbl,yend=CCT_lbl,color=color_d),
+                       linewidth=1.5,alpha=0.6)+
       geom_point(aes(x=PRE, y=CCT_lbl), color=COL_PRE, size=3)+
       geom_point(aes(x=POST,y=CCT_lbl), color=COL_POST,size=3)+
       geom_text(aes(x=POST,y=CCT_lbl,
@@ -1179,11 +1202,13 @@ analizar_mlm <- function(nm) {
            subtitle="Punto azul=PRE | Punto naranja=POST | Etiqueta=delta en pp",
            x="PMP medio (%)",y="CCT")+
       theme(axis.text.y=element_text(size=7))
-    guardar_g(g7, gg("G7_dumbbell_CCT.png"),
-              11, max(6,n_ccts_plot*0.28+2))
-    write.csv(df_dumb %>% rename(CCT=.data[[cct_col]]),
-              file.path(dir_nm,"TABLAS",paste0(nm,"_cambio_CCT.csv")),row.names=FALSE)
-  }
+        guardar_g(g7, gg("G7_dumbbell_CCT.png"),
+                  11, max(6,n_ccts_plot*0.28+2))
+        write.csv(df_dumb %>% rename(CCT=.data[[cct_col]]),
+                  file.path(dir_nm,"TABLAS",paste0(nm,"_cambio_CCT.csv")),row.names=FALSE)
+      }
+    }
+  }, error=function(e) cat(sprintf("  !! G7 error: %s\n", conditionMessage(e))))
 
   n_g <- length(list.files(file.path(dir_nm,"GRAFICOS"),"*.png"))
   cat(sprintf("  ✓ %s | %d modelos | %d gráficos\n", nm, length(modelos_ok), n_g))
@@ -1223,25 +1248,29 @@ if (!is.null(df_resumen_global)) {
 }
 
 # Gráfico comparativo global: delta PRE-POST por instrumento
-if (!is.null(df_resumen_global) && sum(!is.na(df_resumen_global$delta_pp))>0) {
-  g_comp <- ggplot(df_resumen_global%>%filter(!is.na(delta_pp)),
-                    aes(x=reorder(instrumento,delta_pp),
-                        y=delta_pp, fill=ifelse(delta_pp>0,"Mejora","Sin cambio"))) +
-    geom_col(width=0.7,alpha=0.9,color="white",linewidth=0.3) +
-    geom_text(aes(label=sprintf("%+.1f pp\n(d=%.2f)",delta_pp,
-                                 ifelse(is.na(d_Cohen),0,d_Cohen))),
-              hjust=ifelse(df_resumen_global$delta_pp[!is.na(df_resumen_global$delta_pp)]>=0,-0.1,1.1),
-              size=3.5,fontface="bold")+
-    geom_hline(yintercept=0,linewidth=0.5,color="#444")+
-    scale_fill_manual(values=c(Mejora="#1A9641","Sin cambio"="#FDAE61"),guide="none")+
-    scale_y_continuous(labels=label_number(suffix=" pp"))+
-    coord_flip()+
-    labs(title="Cambio PRE→POST por instrumento (puntos porcentuales de PMP)",
-         subtitle="d = Cohen's d sobre la distribución de diferencias individuales",
-         x=NULL, y="Δ PMP (pp)")+
-    theme(axis.text.y=element_text(size=10,face="bold"))
-  guardar_g(g_comp, file.path(ruta_sal,"GRAFICOS","00_comparativo_delta.png"), 11, 6)
-}
+tryCatch({
+  df_g_comp <- df_resumen_global %>% filter(!is.na(delta_pp))
+  if (!is.null(df_g_comp) && nrow(df_g_comp)>0) {
+    g_comp <- ggplot(df_g_comp,
+                     aes(x=reorder(instrumento,delta_pp), y=delta_pp,
+                         fill=ifelse(delta_pp>0,"Mejora","Sin cambio"))) +
+      geom_col(width=0.7,alpha=0.9,color="white",linewidth=0.3) +
+      geom_text(aes(label=sprintf("%+.1f pp\n(d_aj=%.2f)",
+                                   delta_pp,
+                                   ifelse(is.na(d_Cohen_ajust),0,d_Cohen_ajust))),
+                hjust=ifelse(df_g_comp$delta_pp>=0,-0.1,1.1),
+                size=3.5,fontface="bold") +
+      geom_hline(yintercept=0,linewidth=0.5,color="#444") +
+      scale_fill_manual(values=c(Mejora="#1A9641","Sin cambio"="#FDAE61"),guide="none") +
+      scale_y_continuous(labels=label_number(suffix=" pp"), expand=expansion(mult=0.15)) +
+      coord_flip() +
+      labs(title="Cambio PRE→POST por instrumento (puntos porcentuales de PMP)",
+           subtitle="d_aj = Cohen's d ajustado por el modelo multinivel (Nakagawa 2013)",
+           x=NULL, y="Δ PMP (pp)") +
+      theme(axis.text.y=element_text(size=10,face="bold"))
+    guardar_g(g_comp, file.path(ruta_sal,"GRAFICOS","00_comparativo_delta.png"), 11, 6)
+  }
+}, error=function(e) cat(sprintf("  !! Gráfico global error: %s\n", conditionMessage(e))))
 
 cat("\n  Archivos en:", ruta_sal, "\n")
 cat("  Fin:", format(Sys.time(),"%Y-%m-%d %H:%M:%S"), "\n\n")
