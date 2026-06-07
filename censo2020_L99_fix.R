@@ -750,7 +750,6 @@ vuln_micro <- cohorte |>
     pct_sinele = mean(sin_elect==1,  na.rm=T)*100,
     pct_brecha = mean(brecha_dig==1, na.rm=T)*100,
     pct_piso   = mean(piso_tierra==1,na.rm=T)*100,
-    escol_m    = mean(escol_n,       na.rm=T),
     .groups="drop"
   ) |>
   filter(n_coh >= 8) |>
@@ -764,10 +763,9 @@ vuln_micro <- cohorte |>
     n_brecha = norm_mm(pct_brecha),
     n_piso   = norm_mm(pct_piso),
     n_hacin  = norm_mm(hacinam),
-    n_escol  = norm_mm(escol_m, invert=TRUE), # + escolaridad = - riesgo
     IVE      = rowMeans(cbind(n_hli,n_rural,n_discap,n_noasis,
                               n_agua,n_elect,n_brecha,n_piso,
-                              n_hacin,n_escol), na.rm=TRUE),
+                              n_hacin), na.rm=TRUE),
     quintil  = ntile(IVE, 5),
     grupo    = factor(case_when(
       quintil==5~"Muy alta",quintil==4~"Alta",quintil==3~"Media",
@@ -799,9 +797,8 @@ g7 <- vuln_micro |>
     subtitle="Distribución municipal — 10 componentes normalizados min-max",
     x="IVE (0-100)", y=NULL,
     caption="**Fuente:** Microdatos de ejemplo, Censo 2020 (INEGI). Elaboración propia.
-             *IVE = promedio de 10 componentes: HLI, ruralidad, discapacidad, no asistencia,
-             carencias de agua/electricidad, brecha digital, piso tierra, hacinamiento,
-             escolaridad del jefe del hogar (invertida).*") +
+             *IVE = promedio de 9 componentes: HLI, ruralidad, discapacidad, no asistencia,
+             carencias de agua/electricidad, brecha digital, piso tierra, hacinamiento.*") +
   theme(axis.text.y=element_text(size=8),
         legend.key.size=unit(.4,"cm"))
 guardar_graf(g7, "g7_PI4_IVE_boxplot_entidad", w=12, h=8)
