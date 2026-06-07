@@ -694,28 +694,40 @@ colores_escol <- setNames(
   c(pal$vino1,"#922B21",pal$dor1,"#E0BA87",pal$azul2,pal$azul1),
   niveles_escol)
 
-g6 <- cohorte |>
+g6_data <- cohorte |>
   filter(!is.na(escol)) |>
-  mutate(escol=factor(escol, levels=niveles_escol)) |>
-  count(nom_ent_abr, escol) |>
+  mutate(escol = factor(escol, levels = niveles_escol)) |>
+  count(nom_ent_abr, escol, .drop = FALSE) |>
   group_by(nom_ent_abr) |>
-  mutate(pct=n/sum(n)*100) |> ungroup() |>
-  ggplot(aes(pct, reorder(nom_ent_abr, pct*(escol %in% c("Sin escolaridad","Primaria"))),
-             fill=escol)) +
-  geom_col(position="fill", width=.85) +
-  scale_fill_manual(values=colores_escol, name="Último nivel aprobado") +
-  scale_x_continuous(labels=label_percent(),
-                     expand=expansion(mult=c(0,.01))) +
-  geom_vline(xintercept=.5, linetype="dashed",
-             color=pal$gris2, linewidth=.5) +
+  mutate(pct = n / sum(n) * 100) |>
+  ungroup()
+
+# Orden por proporción de escolaridad baja (externo a aes para evitar conflicto de niveles)
+ord_g6 <- g6_data |>
+  filter(escol %in% c("Sin escolaridad", "Preescolar", "Primaria")) |>
+  group_by(nom_ent_abr) |>
+  summarise(pct_baja = sum(pct), .groups = "drop") |>
+  arrange(pct_baja)
+
+g6_data <- g6_data |>
+  mutate(nom_ent_abr = factor(nom_ent_abr, levels = ord_g6$nom_ent_abr))
+
+g6 <- ggplot(g6_data, aes(n, nom_ent_abr, fill = escol)) +
+  geom_col(position = "fill", width = .85) +
+  scale_fill_manual(values = colores_escol, name = "Último nivel aprobado",
+                    drop = FALSE) +
+  scale_x_continuous(labels = label_percent(),
+                     expand = expansion(mult = c(0, .01))) +
+  geom_vline(xintercept = .5, linetype = "dashed",
+             color = pal$gris2, linewidth = .5) +
   labs(
-    title  = "**Escolaridad del jefe/a del hogar — cohorte 8-11 años (2020)**",
-    subtitle="Proporción por nivel educativo y entidad federativa",
-    x="Proporción", y=NULL,
-    caption="**Fuente:** Microdatos de ejemplo, Censo 2020 (INEGI).
+    title    = "**Escolaridad del jefe/a del hogar — cohorte 8-11 años (2020)**",
+    subtitle = "Proporción por nivel educativo y entidad federativa",
+    x = "Proporción", y = NULL,
+    caption  = "**Fuente:** Microdatos de ejemplo, Censo 2020 (INEGI).
              Escolaridad de la persona de referencia del hogar (PARENT=01).") +
-  theme(axis.text.y=element_text(size=8),
-        legend.key.size=unit(.4,"cm"))
+  theme(axis.text.y = element_text(size = 8),
+        legend.key.size = unit(.4, "cm"))
 guardar_graf(g6, "g6_PI3_escolaridad_jefe_hogar", w=13, h=8)
 
 
