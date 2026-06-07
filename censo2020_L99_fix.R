@@ -197,24 +197,19 @@ library(janitor) # Para clean_names()
 
 # ── 2. CARGA INTELIGENTE Y FILTRADO AL VUELO ─────────────────────────────────
 
-message("Cargando y filtrando personas (Cohorte 8–11 años)...")
+message("Cargando personas (padrón completo)...")
 
-# vroom permite seleccionar columnas y transformar tipos de datos durante la lectura
+# per_raw = padrón completo; el filtro de edad se aplica al crear cohorte (línea ~308)
 per_raw <- vroom(
   RUTA_PER,
   locale = locale(encoding = "latin1"),
   col_types = cols(
-    EDAD = col_number(), # Convierte a número inmediatamente para poder filtrar
-    .default = col_character() # El resto se queda como texto
+    EDAD = col_number(),
+    .default = col_character()
   ),
   show_col_types = FALSE
-) |> 
-  clean_names() |> 
-  filter(
-    !is.na(edad),
-    edad >= 8,
-    edad <= 11
-  )
+) |>
+  clean_names()
 
 message("Cargando viviendas...")
 # Si el archivo de viviendas también es gigante, vroom lo leerá en un instante
@@ -229,12 +224,11 @@ viv_raw <- vroom(
 # ── 3. REPORTES Y VERIFICACIÓN ───────────────────────────────────────────────
 
 cat(sprintf(
-  "Cohorte 8-11 años: %s registros | Viviendas: %s\n",
+  "Personas (padrón completo): %s | Viviendas: %s\n",
   format(nrow(per_raw), big.mark = ","),
   format(nrow(viv_raw), big.mark = ",")
 ))
 
-# Verificar cobertura nacional
 cat(sprintf(
   "Entidades presentes: %s\n",
   n_distinct(per_raw$ent)
@@ -363,8 +357,14 @@ cohorte <- per_raw |>
            brecha_dig, piso_tierra, tipo_hogar), by="id_viv")
 
 # Escolaridad y actividad del jefe/a
+# Detectar nombre real de la columna de parentesco (varía según archivo)
+col_parent <- intersect(c("parent","parentesco","relacion"), names(per_raw))[1]
+if (is.na(col_parent))
+  stop("No se encontró columna de parentesco en per_raw. Columnas disponibles: ",
+       paste(names(per_raw), collapse=", "))
+
 jefes <- per_raw |>
-  filter(parent=="01") |>
+  filter(.data[[col_parent]] == "01") |>
   mutate(
     escol = case_when(
       nivacad=="00"~"Sin escolaridad", nivacad=="01"~"Preescolar",
