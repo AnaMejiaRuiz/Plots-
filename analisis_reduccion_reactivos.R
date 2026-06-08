@@ -44,18 +44,47 @@ CONFIG <- list(
   figuras      = c("DIR", "DOC", "EST", "PMF"),
   cuestionarios = c("HD", "HSXXI", "HI", "CTXT"),
 
+  # --- Máximo teórico por cuestionario (escala inicia en 0) ---
+  # Se usa cuando TODOS los ítems del cuestionario comparten el mismo máximo.
+  # Si el cuestionario mezcla escalas (como HD con 0-3 y 0-4), usar NULL
+  # para que el pipeline detecte el máximo de cada ítem automáticamente.
+  #
+  # HD:    mezcla hd_conocimiento/habilidad (0-3) y hd_frecuencia (0-4) → NULL
+  # HSXXI: hsxxi_acuerdo / hsxxi_frecuencia → 0-4 (max = 4)
+  # HI:    hi_frecuencia / hi_acuerdo       → 0-4 (max = 4)
+  # CTXT:  mezcla ctx_frecuencia (0-3) y ctx_acuerdo (0-4) → NULL
+  #        ctx_binaria (0-1) se trata aparte en pipeline_ctxt rama "dicotomico"
+  max_escala = list(
+    HD    = NULL,  # mezcla 0-3 y 0-4 → detectar por ítem automáticamente
+    HSXXI = 4,     # homogéneo 0-4
+    HI    = 4,     # homogéneo 0-4
+    CTXT  = NULL   # mezcla → detectar por ítem automáticamente
+  ),
+
   # --- Umbrales psicométricos ---
   umbral_NA_pct      = 20,    # % de NAs por ítem para marcar como crítico
   umbral_alpha       = 0.70,
   umbral_ritc        = 0.30,
-  umbral_dif_min     = 0.20,  # índice dificultad mínimo (Likert normalizado)
-  umbral_dif_max     = 0.80,
+  umbral_dif_min     = 0.20,  # índice de dificultad normalizado mínimo
+  umbral_dif_max     = 0.80,  # índice de dificultad normalizado máximo
   umbral_infit       = 1.30,
   umbral_outfit      = 1.30,
   umbral_a_grm       = 0.50,  # discriminación GRM mínima
   umbral_comunalidad = 0.20,
   umbral_estabilidad = 0.50,  # EGA item stability
   umbral_votos       = 2      # mínimo de métodos que deben coincidir para eliminar
+)
+
+# Tratamiento de "No lo sé / Prefiero no contestar" → NA
+# JUSTIFICACIÓN: estas respuestas indican ausencia de información sobre el
+# constructo, no el nivel más bajo de la escala. Imputarlas como 0 sesgaría
+# la media a la baja y distorsionaría ritc, b_Rasch y parámetro a del GRM.
+# Se mantienen como NA y se reporta su proporción por ítem (flag_NA).
+VALORES_NA <- c(
+  "No lo sé/Prefiero no contestar",
+  "No lo sé/ Prefiero no contestar",
+  "No lo sé / Prefiero no contestar",
+  "No lo sé", "Prefiero no contestar", "No aplica", "NA"
 )
 
 dir.create(CONFIG$dir_salida, showWarnings = FALSE, recursive = TRUE)
@@ -154,12 +183,33 @@ diagnostico_NA <- function(datos, etiqueta) {
 
 #' Ejecuta TCT + IRT (Rasch + GRM) + EFA + EGA para un data.frame de ítems.
 #'
-#' @param datos   data.frame con solo los ítems (numérico, sin NAs críticos)
-#' @param etiqueta Cadena identificadora para mensajes y archivos
-#' @param n_cat   Número de categorías de respuesta
+#' @param datos      data.frame con solo los ítems (numérico, escala inicia en 0)
+#' @param etiqueta   Cadena identificadora para mensajes y archivos
+#' @param max_item   Valor máximo teórico de la escala (ej. 3 para 0-3, 4 para 0-4).
+#'                   Si NULL se deriva del máximo observado en los datos.
 #' @return data.frame con todos los indicadores por ítem
 
-analizar_items <- function(datos, etiqueta, n_cat = 4) {
+analizar_items <- function(datos, etiqueta, max_item = NULL) {
+
+  # Máximo teórico por ítem (escala inicia en 0)
+  # Si max_item es un escalar se aplica a todos los ítems.
+  # Si es NULL se deriva del máximo observado en cada columna (recomendado
+  # cuando un cuestionario mezcla escalas 0-3 y 0-4, como HD).
+  max_por_item <- if (!is.null(max_item) && length(max_item) == 1) {
+    setNames(rep(max_item, ncol(datos)), names(datos))
+  } else {
+    # Detectar automáticamente: el máximo observado de cada ítem
+    # (asume que al menos un sujeto usó la categoría más alta)
+    sapply(datos, max, na.rm = TRUE)
+  }
+  if (any(max_por_item <= 0, na.rm = TRUE))
+    stop("Algún ítem tiene max <= 0; revisa la codificación.")
+
+  # Para mirt necesitamos un máximo único (usar el mayor de todos)
+  n_cat <- max(max_por_item, na.rm = TRUE) + 1
+
+  cat(sprintf("  [INFO] Máximos por ítem (únicos): %s\n",
+              paste(sort(unique(max_por_item)), collapse = ", ")))
 
   # Remover ítems con >20% NA antes de modelos
   diag_na <- diagnostico_NA(datos, etiqueta)
@@ -167,9 +217,10 @@ analizar_items <- function(datos, etiqueta, n_cat = 4) {
   datos_limpios <- datos[, items_ok, drop = FALSE]
 
   tabla <- data.frame(
-    Item   = names(datos),
-    pct_NA = diag_na$pct_NA,
-    flag_NA = diag_na$flag_NA,
+    Item        = names(datos),
+    max_escala  = max_por_item[names(datos)],  # máximo teórico de cada ítem (0-3 o 0-4)
+    pct_NA      = diag_na$pct_NA,
+    flag_NA     = diag_na$flag_NA,
     stringsAsFactors = FALSE
   )
 
@@ -190,7 +241,10 @@ analizar_items <- function(datos, etiqueta, n_cat = 4) {
 
   if (!is.null(alpha_obj)) {
     media_item  <- colMeans(datos_limpios, na.rm = TRUE)
-    p_item      <- (media_item - 1) / (n_cat - 1)
+    # Índice de dificultad normalizado por ítem: media / max_item_propio
+    # Esto es correcto cuando hay ítems con distinto máximo (0-3 y 0-4 en HD).
+    max_limpios <- max_por_item[names(datos_limpios)]
+    p_item      <- media_item / max_limpios
     ritc        <- alpha_obj$item.stats$r.drop
     alpha_drop  <- alpha_obj$alpha.drop[, "raw_alpha"]
     alpha_global <- alpha_obj$total$raw_alpha
@@ -476,10 +530,17 @@ agregar_hoja_tabla <- function(wb, nombre_hoja, tabla, col_decision = "decision_
 #' @param figura     "DIR", "DOC", "EST", o "PMF"
 #' @param momento    "pre" o "post"
 #' @param catalogo   data.frame devuelto por catalogo_archivos()
-#' @param n_cat      Número de categorías de respuesta
+#' @param max_item   Máximo teórico de la escala (0 = inicio). NULL → derivar de datos.
+#'                   Usar CONFIG$max_escala[[cuestion]] como valor por defecto.
 
 ejecutar_combinacion <- function(cuestion, figura, momento = "pre",
-                                 catalogo, n_cat = 4) {
+                                 catalogo, max_item = NULL) {
+
+  # Resolver max_item desde CONFIG si no se especifica
+  if (is.null(max_item) && cuestion %in% names(CONFIG$max_escala)) {
+    max_item <- CONFIG$max_escala[[cuestion]]
+    cat(sprintf("  [INFO] max_item para %s desde CONFIG: %g\n", cuestion, max_item))
+  }
 
   etiq_base <- paste0(cuestion, "_", figura, "_", momento)
   cat("\n", strrep("=", 70), "\n")
@@ -511,7 +572,7 @@ ejecutar_combinacion <- function(cuestion, figura, momento = "pre",
     }
     cat("  N sujetos:", nrow(datos), "| N ítems:", ncol(datos), "\n")
 
-    res <- analizar_items(datos, etiq, n_cat = n_cat)
+    res <- analizar_items(datos, etiq, max_item = max_item)
     res$ciclo <- ciclo
     resultados_ciclo[[ciclo]] <- res
   }
@@ -635,6 +696,10 @@ cat(sprintf("Archivos encontrados: %d\n", nrow(catalogo)))
 if (nrow(catalogo) > 0) print(catalogo[, c("ciclo","cuestion","figura","momento")])
 
 # --- Ejecutar todas las combinaciones encontradas en el catálogo ---
+# max_item se resuelve automáticamente desde CONFIG$max_escala por cuestionario.
+# Si un cuestionario mezcla tipos de escala (ej. CTXT con binarias y Likert),
+# ejecuta por separado especificando max_item manualmente.
+#
 # Descomenta para correr todo de una vez:
 #
 # combinaciones <- catalogo %>%
@@ -642,19 +707,21 @@ if (nrow(catalogo) > 0) print(catalogo[, c("ciclo","cuestion","figura","momento"
 #
 # for (i in seq_len(nrow(combinaciones))) {
 #   ejecutar_combinacion(
-#     cuestion = combinaciones$cuestion[i],
-#     figura   = combinaciones$figura[i],
-#     momento  = combinaciones$momento[i],
-#     catalogo = catalogo,
-#     n_cat    = 4
+#     cuestion  = combinaciones$cuestion[i],
+#     figura    = combinaciones$figura[i],
+#     momento   = combinaciones$momento[i],
+#     catalogo  = catalogo
+#     # max_item = NULL  → se toma de CONFIG$max_escala automáticamente
 #   )
 # }
 # consolidar_global()
 
-# --- O ejecutar solo una combinación específica ---
-# ejecutar_combinacion("HSXXI", "EST", "pre", catalogo)
-# ejecutar_combinacion("HD",    "DOC", "pre", catalogo)
-# ejecutar_combinacion("CTXT",  "PMF", "pre", catalogo)
+# --- O ejecutar una combinación específica con max_item explícito ---
+# ejecutar_combinacion("HSXXI", "EST", "pre",  catalogo)           # max=4 (0-4)
+# ejecutar_combinacion("HD",    "DOC", "pre",  catalogo)           # max=3 (0-3)
+# ejecutar_combinacion("HI",    "DOC", "pre",  catalogo)           # max=4 (0-4)
+# ejecutar_combinacion("CTXT",  "PMF", "pre",  catalogo)           # max=3 (0-3)
+# ejecutar_combinacion("HD",    "EST", "pre",  catalogo, max_item = 4)  # si HD usa hd_frecuencia (0-4)
 
 cat("\nPróximos pasos:\n")
 cat("  1. Verifica que catalogo tenga todos tus archivos (impreso arriba).\n")
