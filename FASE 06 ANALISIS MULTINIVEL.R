@@ -99,6 +99,17 @@ COD_ALL <- list(
                     "Totalmente, e incluso podría explicárselo a otras personas"=3),
   habilidad4  = c("No sé cómo hacerlo"=0,"Puedo hacerlo con ayuda"=1,
                   "Puedo hacerlo por mi cuenta"=2,
+                  "Puedo hacerlo con confianza y si es necesario puedo ayudar a otras personas"=3),
+  # Escala mixta HD: ítems que combinan etiquetas de conocimiento4 y habilidad4
+  # en una misma columna (e.g. HD_EST Q29, Q57, Q65, Q93). Ambas escalas son
+  # 0-3 y el mapeo de nivel es equivalente, por lo que combinarlas es válido.
+  hd_mixta    = c("No sé / Nunca he oído hablar de esto"=0,
+                  "No sé cómo hacerlo"=0,
+                  "Conozco un poco el tema"=1,
+                  "Puedo hacerlo con ayuda"=1,
+                  "Sí, conozco bien este tema"=2,
+                  "Puedo hacerlo por mi cuenta"=2,
+                  "Totalmente, e incluso podría explicárselo a otras personas"=3,
                   "Puedo hacerlo con confianza y si es necesario puedo ayudar a otras personas"=3)
 )
 recodificar <- function(vec) {
