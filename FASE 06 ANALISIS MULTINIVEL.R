@@ -841,36 +841,48 @@ analizar_mlm <- function(nm) {
 
   # Medias marginales estimadas por nivel (si aplica)
   emmeans_nivel <- NULL
+  cat(sprintf("  G6 debug: nivel_col='%s'  en_df_mlm=%s  M2_nivel=%s  tiene_post=%s\n",
+              as.character(if(is.null(nivel_col)) "NULL" else nivel_col),
+              if(!is.null(nivel_col) && !is.null(df_mlm)) as.character(nivel_col %in% names(df_mlm)) else "—",
+              if(!is.null(MODELOS$M2_nivel)) "OK" else "NULL",
+              as.character(tiene_post)))
   if (!is.null(nivel_col)) {
     # Fuente 1: emmeans del modelo M2_nivel (ajustado por MLM)
     if (!is.null(MODELOS$M2_nivel)) {
       emmeans_nivel <- tryCatch({
-        em_niv <- as.data.frame(emmeans(MODELOS$M2_nivel,
-                                        specs=c("momento", nivel_col),
-                                        at=list(momento=c(0,1))))
-        em_niv
+        as.data.frame(emmeans(MODELOS$M2_nivel,
+                              specs=c("momento", nivel_col),
+                              at=list(momento=c(0,1))))
       }, error=function(e) {
         cat(sprintf("  !! emmeans M2_nivel error: %s\n", conditionMessage(e)))
         NULL
       })
     }
-    # Fuente 2: fallback — medias crudas agrupadas desde df_long
+    # Fuente 2: medias crudas agrupadas — funciona con o sin POST
+    # (sin tiene_post: solo muestra PRE; con tiene_post: PRE y POST)
     if (is.null(emmeans_nivel) && !is.null(df_long) &&
-        nivel_col %in% names(df_long) && tiene_post) {
+        nivel_col %in% names(df_long)) {
+      cat("  G6: intentando fallback de medias crudas agrupadas...\n")
       emmeans_nivel <- tryCatch({
         df_long %>%
           filter(!is.na(PMP), !is.na(.data[[nivel_col]])) %>%
           group_by(momento, .data[[nivel_col]]) %>%
-          summarise(n_obs=n(),
-                    emmean=mean(PMP, na.rm=TRUE),
-                    SE=sd(PMP, na.rm=TRUE)/sqrt(n()),
-                    .groups="drop") %>%
-          mutate(lower.CL=emmean-1.96*SE,
-                 upper.CL=emmean+1.96*SE,
-                 fuente="cruda")
-      }, error=function(e) NULL)
-      if (!is.null(emmeans_nivel))
-        cat("  Usando medias crudas (fallback) para G6 por nivel.\n")
+          summarise(emmean   = mean(PMP, na.rm=TRUE),
+                    SE       = sd(PMP, na.rm=TRUE) / sqrt(n()),
+                    n_obs    = n(),
+                    .groups  = "drop") %>%
+          mutate(lower.CL = emmean - 1.96*SE,
+                 upper.CL = emmean + 1.96*SE)
+      }, error=function(e) {
+        cat(sprintf("  !! G6 fallback error: %s\n", conditionMessage(e)))
+        NULL
+      })
+      if (!is.null(emmeans_nivel) && nrow(emmeans_nivel) > 0)
+        cat(sprintf("  G6 fallback OK: %d filas (niveles × momentos).\n",
+                    nrow(emmeans_nivel)))
+    } else if (is.null(emmeans_nivel)) {
+      cat(sprintf("  !! G6: nivel_col '%s' NO encontrada en df_long — G6 se omite.\n",
+                  nivel_col))
     }
   }
 
@@ -1005,7 +1017,10 @@ analizar_mlm <- function(nm) {
   # Fuente 1 (preferida): emmeans de M1_tiempo — medias ajustadas por el modelo MLM
   # Fuente 2 (fallback):  medias crudas de df_pre / df_post directamente
   tryCatch({
-    if (tiene_post) {
+    if (!tiene_post) {
+      cat(sprintf("  G1b omitido: no hay archivo POST (%s)\n",
+                  paste0(ruta_post, cfg$archivo_post)))
+    } else {
       n_pmp_pre_ok  <- sum(is.finite(df_pre$PMP))
       n_pmp_post_ok <- if (!is.null(df_post)) sum(is.finite(df_post$PMP)) else 0
       cat(sprintf("  G1b: PMP válidos — PRE=%d  POST=%d  M1_tiempo=%s\n",
