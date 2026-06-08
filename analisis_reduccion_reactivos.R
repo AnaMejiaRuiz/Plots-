@@ -109,22 +109,42 @@ cargar_base <- function(ruta, ciclo) {
   )
   if (is.null(dat)) return(NULL)
 
-  # Estandarizar nombres: PRE_CTXT_PMF_Q45 → Q45
+  # Estandarizar nombres para archivos del ciclo 2425.
+  # Estructura observada en los archivos exportados:
+  #   PRE_CTXT_PMF_Q45        → ítem simple     → Q45
+  #   POS_CTXT_DIR_Q10        → padre opción múlt. (todo NA) → descartar
+  #   POS_CTXT_DIR_Q10_LAPTOP → sub-ítem binario → Q10_LAPTOP
+  # La misma lógica aplica a ambos prefijos (PRE_ y POS_).
   if (ciclo == "2425") {
-    names(dat) <- stringr::str_extract(names(dat), "Q\\d+$")
-    names(dat)[is.na(names(dat))] <- paste0("VAR_", seq_len(sum(is.na(names(dat)))))
+    # Extraer todo lo que viene desde la primera Q seguida de dígito
+    extraido <- stringr::str_extract(names(dat), "Q\\d+.*$")
+    # Limpiar guiones/espacios residuales
+    extraido <- stringr::str_replace_all(extraido, "[^A-Za-z0-9_]", "_")
+    names(dat) <- ifelse(is.na(extraido),
+                         paste0("VAR_", seq_along(extraido)),
+                         extraido)
   }
 
-  # Seleccionar solo columnas Qn
-  cols_q <- stringr::str_detect(names(dat), "^Q\\d+$")
-  if (sum(cols_q) == 0) {
-    warning("Sin columnas Qn en: ", ruta); return(NULL)
-  }
-  dat <- dat[, cols_q, drop = FALSE]
+  # Forzar numérico en todas las columnas Q (antes de filtrar,
+  # para poder detectar columnas todo-NA provenientes de padres de opción múltiple)
+  cols_q_idx <- stringr::str_detect(names(dat), "^Q\\d+")
+  dat_q <- dat[, cols_q_idx, drop = FALSE]
+  dat_q <- as.data.frame(lapply(dat_q, function(x) suppressWarnings(as.numeric(as.character(x)))))
 
-  # Forzar numérico
-  dat <- as.data.frame(lapply(dat, function(x) suppressWarnings(as.numeric(as.character(x)))))
-  dat
+  # Eliminar columnas donde el 100% son NA:
+  # Corresponden a preguntas "padre" de opción múltiple cuya data real
+  # está en los sub-ítems (Q10_LAPTOP, Q10_AUTO, etc.)
+  todo_na <- colMeans(is.na(dat_q)) == 1
+  if (any(todo_na)) {
+    cat(sprintf("  [INFO] Columnas padre descartadas (100%% NA): %s\n",
+                paste(names(dat_q)[todo_na], collapse = ", ")))
+    dat_q <- dat_q[, !todo_na, drop = FALSE]
+  }
+
+  if (ncol(dat_q) == 0) {
+    warning("Sin columnas con datos en: ", ruta); return(NULL)
+  }
+  dat_q
 }
 
 #' Construye el catálogo de archivos disponibles para los dos ciclos.
@@ -191,21 +211,33 @@ diagnostico_NA <- function(datos, etiqueta) {
 
 analizar_items <- function(datos, etiqueta, max_item = NULL) {
 
-  # Máximo teórico por ítem (escala inicia en 0)
-  # Si max_item es un escalar se aplica a todos los ítems.
-  # Si es NULL se deriva del máximo observado en cada columna (recomendado
-  # cuando un cuestionario mezcla escalas 0-3 y 0-4, como HD).
-  max_por_item <- if (!is.null(max_item) && length(max_item) == 1) {
-    setNames(rep(max_item, ncol(datos)), names(datos))
-  } else {
-    # Detectar automáticamente: el máximo observado de cada ítem
-    # (asume que al menos un sujeto usó la categoría más alta)
-    sapply(datos, max, na.rm = TRUE)
-  }
-  if (any(max_por_item <= 0, na.rm = TRUE))
-    stop("Algún ítem tiene max <= 0; revisa la codificación.")
+  # Máximo teórico por ítem (escala inicia en 0).
+  # Si max_item es un escalar se aplica igual a todos; si es NULL se detecta
+  # automáticamente por columna (necesario cuando hay mezcla 0-3 / 0-4).
+  max_obs <- sapply(datos, function(x) {
+    v <- max(x, na.rm = TRUE)
+    if (is.infinite(v) || is.nan(v)) NA_real_ else v
+  })
 
-  # Para mirt necesitamos un máximo único (usar el mayor de todos)
+  max_por_item <- if (!is.null(max_item) && length(max_item) == 1) {
+    setNames(rep(as.numeric(max_item), ncol(datos)), names(datos))
+  } else {
+    max_obs
+  }
+
+  # Ítems cuyo máximo observado es NA (todo NA) o 0 (sin variabilidad)
+  # se marcan como DATOS_INSUFICIENTES en diagnostico_NA; no crashear aquí.
+  problemas_max <- is.na(max_por_item) | max_por_item <= 0
+  if (any(problemas_max)) {
+    cat(sprintf("  [AVISO] %d ítems con max NA o ≤0 (todo-NA o sin variabilidad): %s\n",
+                sum(problemas_max),
+                paste(names(max_por_item)[problemas_max], collapse = ", ")))
+    # Asignar max=1 provisional para no bloquear el flujo; serán descartados
+    # en la limpieza por NAs antes de los modelos.
+    max_por_item[problemas_max] <- 1
+  }
+
+  # Para mirt: máximo único = el mayor de todos los ítems válidos
   n_cat <- max(max_por_item, na.rm = TRUE) + 1
 
   cat(sprintf("  [INFO] Máximos por ítem (únicos): %s\n",
