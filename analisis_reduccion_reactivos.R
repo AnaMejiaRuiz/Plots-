@@ -543,17 +543,23 @@ analizar_items <- function(datos, etiqueta, max_item = NULL) {
     )
     tabla <- dplyr::left_join(tabla, grm_df, by = "Item")
 
-    # Guardar ICC y TIC
+    # Guardar ICC (curvas características) y TIC (información del test)
     tryCatch({
-      pdf(file.path(CONFIG$dir_salida,
-                    paste0(etiqueta, "_ICC_GRM.pdf")), width = 12, height = 8)
+      dir_fig <- file.path(CONFIG$dir_salida, "figuras")
+      dir.create(dir_fig, showWarnings = FALSE, recursive = TRUE)
+      ruta_icc <- file.path(dir_fig, paste0(etiqueta, "_ICC_GRM.pdf"))
+      pdf(ruta_icc, width = 12, height = 8)
       n_g <- min(ncol(datos_limpios), 24)
       for (i in seq(1, n_g, by = 6)) {
         idx <- i:min(i + 5, n_g)
         mirt::plot(mod_grm, type = "trace", which.items = idx,
                    main = paste0(etiqueta, " — ICC ítems ", min(idx), "–", max(idx)))
       }
+      # Curva de información del test
+      mirt::plot(mod_grm, type = "info",
+                 main = paste0(etiqueta, " — Información del test (GRM)"))
       dev.off()
+      cat("  [GRM] ICC guardado:", basename(ruta_icc), "\n")
     }, error = function(e) NULL)
 
   }, error = function(e) warning("GRM error: ", e$message))
@@ -585,6 +591,18 @@ analizar_items <- function(datos, etiqueta, max_item = NULL) {
   tryCatch({
     ega_r <- EGAnet::EGA(datos_limpios, model = "glasso",
                          plot.EGA = FALSE, verbose = FALSE)
+
+    # Guardar red EGA
+    tryCatch({
+      dir_fig <- file.path(CONFIG$dir_salida, "figuras")
+      dir.create(dir_fig, showWarnings = FALSE, recursive = TRUE)
+      ruta_ega <- file.path(dir_fig, paste0(etiqueta, "_Red_EGA.png"))
+      png(ruta_ega, width = 1800, height = 1400, res = 150)
+      plot(ega_r, title = paste0(etiqueta, " — Red EGA (glasso)"))
+      dev.off()
+      cat("  [EGA] Red guardada:", basename(ruta_ega), "\n")
+    }, error = function(e) NULL)
+
     boot_ega <- tryCatch(
       EGAnet::bootEGA(datos_limpios, model = "glasso",
                       iter = 100, plot.typicalStructure = FALSE,
@@ -629,6 +647,60 @@ analizar_items <- function(datos, etiqueta, max_item = NULL) {
       TRUE ~ "Conservar"
     )
   }
+
+  # -------------------------------------------------------------------------
+  # 4g. Gráfico de perfil de ítems (ritc + dificultad + decisión)
+  # -------------------------------------------------------------------------
+  tryCatch({
+    dir_fig <- file.path(CONFIG$dir_salida, "figuras")
+    dir.create(dir_fig, showWarnings = FALSE, recursive = TRUE)
+    ruta_perfil <- file.path(dir_fig, paste0(etiqueta, "_Perfil_items.png"))
+
+    n_items <- nrow(tabla)
+    alto    <- max(600, n_items * 18)
+    png(ruta_perfil, width = 1400, height = alto, res = 120)
+
+    # Colores por decisión
+    col_dec <- dplyr::case_when(
+      tabla$decision_final == "ELIMINAR"           ~ "#CC0000",
+      tabla$decision_final == "DATOS_INSUFICIENTES"~ "#888888",
+      TRUE                                          ~ "#006600"
+    )
+
+    op <- par(mfrow = c(1, 2), mar = c(4, 6, 3, 1), oma = c(0, 0, 3, 0))
+
+    # Panel izquierdo: ritc
+    ritc_vals <- ifelse(is.na(tabla$ritc), 0, tabla$ritc)
+    barplot(ritc_vals,
+            names.arg = tabla$Item, horiz = TRUE, las = 1,
+            col = col_dec, border = NA,
+            xlab = "Correlación ítem-total (ritc)",
+            main = "ritc por ítem",
+            xlim = c(0, max(1, max(ritc_vals, na.rm = TRUE) * 1.1)))
+    abline(v = CONFIG$umbral_ritc, lty = 2, col = "#856404", lwd = 1.5)
+
+    # Panel derecho: dificultad
+    dif_vals <- ifelse(is.na(tabla$p_dificultad), 0, tabla$p_dificultad)
+    barplot(dif_vals,
+            names.arg = tabla$Item, horiz = TRUE, las = 1,
+            col = col_dec, border = NA,
+            xlab = "Índice de dificultad (p)",
+            main = "Dificultad por ítem",
+            xlim = c(0, 1))
+    abline(v = CONFIG$umbral_dif_min, lty = 2, col = "#856404", lwd = 1.5)
+    abline(v = CONFIG$umbral_dif_max, lty = 2, col = "#856404", lwd = 1.5)
+
+    mtext(paste0(etiqueta, " — Perfil de ítems"),
+          outer = TRUE, cex = 1.2, font = 2)
+    legend("topright",
+           legend = c("Conservar", "ELIMINAR", "Sin datos"),
+           fill   = c("#006600", "#CC0000", "#888888"),
+           border = NA, bty = "n", cex = 0.8)
+
+    par(op)
+    dev.off()
+    cat("  [Perfil] Gráfico guardado:", basename(ruta_perfil), "\n")
+  }, error = function(e) NULL)
 
   # Alpha de la escala reducida
   items_conservar <- tabla$Item[tabla$decision_final == "Conservar" &
