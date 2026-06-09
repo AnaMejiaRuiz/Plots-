@@ -106,12 +106,12 @@ dir.create(CONFIG$dir_salida, showWarnings = FALSE, recursive = TRUE)
 
 `%||%` <- function(a, b) if (!is.null(a)) a else b
 
-CROSSWALK_PATH <- file.path(
-  tryCatch(dirname(normalizePath(sys.frame(1)$ofile)), error = function(e) getwd()),
-  "crosswalk_variables_2425_2526.xlsx"
-)
-if (!file.exists(CROSSWALK_PATH))
-  CROSSWALK_PATH <- file.path(CONFIG$dir_datos, "..", "crosswalk_variables_2425_2526.xlsx")
+# Ruta al crosswalk — ajusta si lo guardas en otra ubicación
+# Por defecto busca en la misma carpeta que los datos
+CROSSWALK_PATH <- file.path(CONFIG$dir_datos, "..", "crosswalk_variables_2425_2526.xlsx")
+
+# Si prefieres especificar la ruta directamente, descomenta y edita:
+# CROSSWALK_PATH <- "C:/Users/almejia/Desktop/ANALISIS REACTIVOS/crosswalk_variables_2425_2526.xlsx"
 
 #' Carga y estructura el crosswalk para una hoja dada.
 #'
