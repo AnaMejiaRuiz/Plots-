@@ -502,7 +502,7 @@ analizar_items <- function(datos, etiqueta, max_item = NULL) {
   tryCatch({
     mod_rasch <- mirt::mirt(datos_limpios, model = 1,
                             itemtype = "Rasch", verbose = FALSE)
-    fit_r <- mirt::itemfit(mod_rasch, fit_statistics = "infit")
+    fit_r <- mirt::itemfit(mod_rasch, fit_statistics = "infit", na.rm = TRUE)
     params_r <- mirt::coef(mod_rasch, IRTpars = TRUE, simplify = TRUE)$items
 
     rasch_df <- data.frame(
@@ -526,8 +526,10 @@ analizar_items <- function(datos, etiqueta, max_item = NULL) {
   # -------------------------------------------------------------------------
   cat("  GRM...\n")
   tryCatch({
+    max_por_item <- apply(datos_limpios, 2, max, na.rm = TRUE)
+    grm_type <- if (all(max_por_item <= 1, na.rm = TRUE)) "2PL" else "graded"
     mod_grm <- mirt::mirt(datos_limpios, model = 1,
-                          itemtype = "graded", verbose = FALSE)
+                          itemtype = grm_type, verbose = FALSE)
     params_g <- mirt::coef(mod_grm, IRTpars = TRUE, simplify = TRUE)$items
     info_g   <- mirt::iteminfo(mod_grm, Theta = matrix(0))
 
@@ -583,8 +585,19 @@ analizar_items <- function(datos, etiqueta, max_item = NULL) {
   tryCatch({
     ega_r <- EGAnet::EGA(datos_limpios, model = "glasso",
                          plot.EGA = FALSE, verbose = FALSE)
-    estab  <- EGAnet::itemStability(ega_r)
-    est_vec <- estab$item.stability$empirical.dimensions
+    boot_ega <- tryCatch(
+      EGAnet::bootEGA(datos_limpios, model = "glasso",
+                      iter = 100, plot.typicalStructure = FALSE,
+                      verbose = FALSE),
+      error = function(e) NULL
+    )
+    estab <- if (!is.null(boot_ega)) {
+      tryCatch(EGAnet::itemStability(boot_ega), error = function(e) NULL)
+    } else NULL
+    est_vec <- if (!is.null(estab)) {
+      tryCatch(estab$item.stability$empirical.dimensions, error = function(e) NULL)
+    } else NULL
+    if (is.null(est_vec)) stop("itemStability no disponible")
 
     ega_df <- data.frame(
       Item            = names(est_vec),
@@ -894,6 +907,10 @@ ejecutar_combinacion <- function(cuestion, figura, momento = "pre",
     cat("  N sujetos:", nrow(datos), "| N ítems:", ncol(datos), "\n")
 
     res <- analizar_items(datos, etiq, max_item = max_item)
+    if (is.null(res) || nrow(res) == 0) {
+      cat("  Sin ítems analizables (todos continuos o excluidos) — omitido.\n")
+      next
+    }
     res$ciclo <- ciclo
     resultados_ciclo[[ciclo]] <- res
   }
