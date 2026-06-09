@@ -92,38 +92,39 @@ dir.create(CONFIG$dir_salida, showWarnings = FALSE, recursive = TRUE)
 # =============================================================================
 # 2. CROSSWALK DE VARIABLES ENTRE CICLOS
 # =============================================================================
-# Los números de pregunta (Q1, Q2...) NO son estables entre ciclos:
-#   - El mismo constructo tiene código distinto en 2424-2025 y 2025-2026
-#   - En 2425 las opciones múltiples son sub-ítems (Q10_LAPTOP); en 2526
-#     cada opción tiene su propio Q secuencial (Q14, Q15...)
+# Los Q-números NO son estables entre ciclos. El crosswalk (validado por
+# experto) define qué ítems incluir y cómo alinearlos.
 #
-# El crosswalk mapea código_2425 ↔ código_2526 por cuestionario/figura.
-# Se genera automáticamente con similitud de texto y requiere validación experta.
+# Lógica de la columna 'validado':
+#   ELIMINAR  → excluir del análisis (variable admin, informativa, o sin interés)
+#   OK        → incluir; el comportamiento depende de 'tipo_match':
+#     EXACTO    → mismo constructo en ambos ciclos; comparar entre ciclos
+#     NUEVO     → existe solo en 2526; analizar solo ese ciclo
+#     SIN_MATCH → existe solo en 2425; analizar solo ese ciclo
 #
-# ARCHIVO: crosswalk_variables_2425_2526.xlsx (misma carpeta que este script)
-# Columnas clave: hoja | code_2425 | code_2526 | tipo_match | validado
-
-CROSSWALK_PATH <- file.path(
-  dirname(sys.frame(1)$ofile %||% getwd()),
-  "crosswalk_variables_2425_2526.xlsx"
-)
-# Fallback si no se detecta la ruta del script
-if (!file.exists(CROSSWALK_PATH)) {
-  CROSSWALK_PATH <- file.path(CONFIG$dir_datos, "..", "crosswalk_variables_2425_2526.xlsx")
-}
+# Nombre canónico: para ítems EXACTO se usa el code_2526 como referencia.
 
 `%||%` <- function(a, b) if (!is.null(a)) a else b
 
-#' Carga el crosswalk y devuelve tabla de mapeo para una hoja específica.
-#' Filtra a ítems validados (validado == "OK" o vacío si aún no se revisó).
+CROSSWALK_PATH <- file.path(
+  tryCatch(dirname(normalizePath(sys.frame(1)$ofile)), error = function(e) getwd()),
+  "crosswalk_variables_2425_2526.xlsx"
+)
+if (!file.exists(CROSSWALK_PATH))
+  CROSSWALK_PATH <- file.path(CONFIG$dir_datos, "..", "crosswalk_variables_2425_2526.xlsx")
+
+#' Carga y estructura el crosswalk para una hoja dada.
 #'
 #' @param hoja  Ej. "CTXT_DIR", "HD_DOC", "SXXI_EST"
-#' @return data.frame con columnas code_2425, code_2526 (NA si sin equivalente)
+#' @return list con tres data.frames: $exacto, $nuevo, $sin_match
+#'   $exacto   : code_2425, canon (= code_2526)  — presentes en ambos ciclos
+#'   $nuevo    : canon (= code_2526)              — solo en 2526
+#'   $sin_match: canon (= code_2425)              — solo en 2425
+#'   Devuelve NULL si el crosswalk no existe o la hoja no se encuentra.
 
 cargar_crosswalk <- function(hoja) {
   if (!file.exists(CROSSWALK_PATH)) {
-    warning("Crosswalk no encontrado: ", CROSSWALK_PATH,
-            "\n  La comparación entre ciclos usará códigos crudos (puede ser incorrecta).")
+    warning("Crosswalk no encontrado: ", CROSSWALK_PATH)
     return(NULL)
   }
   cw <- tryCatch(
@@ -133,123 +134,167 @@ cargar_crosswalk <- function(hoja) {
   )
   if (is.null(cw)) return(NULL)
 
-  # Normalizar nombre de hoja (espacios → guiones bajos)
-  cw$hoja <- stringr::str_replace_all(cw$hoja, " ", "_")
-  hoja    <- stringr::str_replace_all(hoja, " ", "_")
+  # Normalizar nombre de hoja
+  cw$hoja <- stringr::str_replace_all(trimws(as.character(cw$hoja)), " ", "_")
+  hoja    <- stringr::str_replace_all(trimws(hoja), " ", "_")
 
-  sub_cw <- cw[cw$hoja == hoja, ]
+  sub_cw <- cw[cw$hoja == hoja & !is.na(cw$hoja), ]
   if (nrow(sub_cw) == 0) {
     warning("Hoja '", hoja, "' no encontrada en crosswalk.")
     return(NULL)
   }
 
-  # Excluir filas marcadas como ELIMINAR y ítems sin match en ninguno de los dos ciclos
-  excluir <- !is.na(sub_cw$validado) & sub_cw$validado == "ELIMINAR"
-  sub_cw  <- sub_cw[!excluir, ]
-
-  sub_cw[, c("code_2425", "code_2526", "tipo_match", "similitud")]
-}
-
-#' Renombra columnas de un data.frame usando el crosswalk para estandarizar
-#' a nombres canónicos "CANON_Qxx" compartidos entre ciclos.
-#'
-#' Para cada par (code_2425, code_2526) se crea un nombre canónico basado
-#' en el código 2526 (que es el ciclo de referencia más reciente).
-#' Columnas sin equivalente en el otro ciclo conservan su código original.
-#'
-#' @param datos  data.frame con columnas nombradas por código de ciclo
-#' @param ciclo  "2425" o "2526"
-#' @param mapa   data.frame devuelto por cargar_crosswalk()
-#' @return data.frame con columnas renombradas a nombres canónicos
-
-aplicar_crosswalk <- function(datos, ciclo, mapa) {
-  if (is.null(mapa)) return(datos)
-
-  col_origen <- if (ciclo == "2425") "code_2425" else "code_2526"
-  col_destino <- if (ciclo == "2425") "code_2526" else "code_2425"
-
-  mapa_valido <- mapa[!is.na(mapa[[col_origen]]) & !is.na(mapa[[col_destino]]),]
-  mapa_vec    <- setNames(mapa_valido[[col_destino]], mapa_valido[[col_origen]])
-
-  nombres_nuevos <- names(datos)
-  for (i in seq_along(nombres_nuevos)) {
-    if (nombres_nuevos[i] %in% names(mapa_vec)) {
-      nombres_nuevos[i] <- mapa_vec[[nombres_nuevos[i]]]
-    }
+  # Solo filas con validado == "OK" (excluir ELIMINAR y sin validar)
+  ok <- !is.na(sub_cw$validado) & trimws(sub_cw$validado) == "OK"
+  sub_cw <- sub_cw[ok, ]
+  if (nrow(sub_cw) == 0) {
+    warning("Ninguna fila con validado='OK' en hoja '", hoja, "'.")
+    return(NULL)
   }
-  names(datos) <- nombres_nuevos
-  datos
+
+  # Normalizar tipo_match (el usuario puede escribir EXACTO, NUEVO, SIN_MATCH)
+  sub_cw$tipo_match <- trimws(toupper(as.character(sub_cw$tipo_match)))
+
+  # --- Ítems EXACTO: presentes en ambos ciclos ---
+  exacto <- sub_cw[sub_cw$tipo_match == "EXACTO" &
+                     !is.na(sub_cw$code_2425) & !is.na(sub_cw$code_2526), ]
+  df_exacto <- data.frame(
+    code_2425 = trimws(exacto$code_2425),
+    canon     = trimws(exacto$code_2526),   # 2526 = nombre canónico
+    stringsAsFactors = FALSE
+  )
+
+  # --- Ítems NUEVO: solo en 2526 ---
+  nuevo <- sub_cw[sub_cw$tipo_match %in% c("NUEVO", "NUEVO_2526") &
+                    !is.na(sub_cw$code_2526), ]
+  df_nuevo <- data.frame(
+    canon = trimws(nuevo$code_2526),
+    stringsAsFactors = FALSE
+  )
+
+  # --- Ítems SIN_MATCH: solo en 2425 ---
+  sin_match <- sub_cw[sub_cw$tipo_match == "SIN_MATCH" &
+                        !is.na(sub_cw$code_2425), ]
+  df_sin_match <- data.frame(
+    canon = trimws(sin_match$code_2425),
+    stringsAsFactors = FALSE
+  )
+
+  cat(sprintf("  [CROSSWALK] '%s': %d EXACTO | %d NUEVO(2526) | %d SIN_MATCH(2425)\n",
+              hoja, nrow(df_exacto), nrow(df_nuevo), nrow(df_sin_match)))
+
+  list(exacto = df_exacto, nuevo = df_nuevo, sin_match = df_sin_match)
 }
 
 # =============================================================================
 # 3. CARGA Y ESTANDARIZACIÓN DE DATOS
 # =============================================================================
 
-#' Carga un archivo Excel de respuestas, estandariza nombres de columnas,
-#' elimina columnas padre todo-NA (preguntas de opción múltiple contenedor),
-#' y opcionalmente aplica el crosswalk para alinear con el otro ciclo.
+#' Carga un archivo Excel, estandariza nombres de columna y aplica el crosswalk.
 #'
-#' @param ruta       Ruta completa al archivo .xlsx
-#' @param ciclo      "2425" o "2526"
-#' @param mapa_cw    data.frame de cargar_crosswalk() o NULL para omitir
-#' @return data.frame con columnas Qn/Qn_SUFIJO estandarizadas
+#' Según el ciclo y el crosswalk, selecciona solo las columnas que corresponden:
+#'   Ciclo 2425 → columnas en $exacto$code_2425 (renombradas a canon) + $sin_match$canon
+#'   Ciclo 2526 → columnas en $exacto$canon + $nuevo$canon
+#'
+#' @param ruta    Ruta completa al archivo .xlsx
+#' @param ciclo   "2425" o "2526"
+#' @param mapa_cw Lista devuelta por cargar_crosswalk(), o NULL
+#' @return data.frame con columnas en nombres canónicos y atributo 'tipo_item'
 
 cargar_base <- function(ruta, ciclo, mapa_cw = NULL) {
   dat <- tryCatch(
     readxl::read_excel(ruta, na = c("", "NA", "N/A")),
-    error = function(e) {
-      warning("No se pudo leer: ", ruta, "\n  ", e$message); return(NULL)
-    }
+    error = function(e) { warning("No se pudo leer: ", ruta, "\n  ", e$message); NULL }
   )
   if (is.null(dat)) return(NULL)
 
-  # Estandarizar nombres para archivos del ciclo 2425.
-  # Estructura observada en los archivos exportados:
-  #   PRE_CTXT_PMF_Q45        → ítem simple     → Q45
-  #   POS_CTXT_DIR_Q10        → padre opción múlt. (todo NA) → descartar
-  #   POS_CTXT_DIR_Q10_LAPTOP → sub-ítem binario → Q10_LAPTOP
-  # La misma lógica aplica a ambos prefijos (PRE_ y POS_).
+  # --- Estandarizar nombres para ciclo 2425 ---
+  # Prefijos observados: PRE_CTXT_DIR_Q1, POS_CTXT_DIR_Q10_LAPTOP, etc.
   if (ciclo == "2425") {
-    # Extraer todo lo que viene desde la primera Q seguida de dígito
     extraido <- stringr::str_extract(names(dat), "Q\\d+.*$")
-    # Limpiar guiones/espacios residuales
     extraido <- stringr::str_replace_all(extraido, "[^A-Za-z0-9_]", "_")
-    names(dat) <- ifelse(is.na(extraido),
-                         paste0("VAR_", seq_along(extraido)),
-                         extraido)
+    names(dat) <- ifelse(is.na(extraido), paste0("VAR_", seq_along(extraido)), extraido)
   }
 
-  # Forzar numérico en todas las columnas Q (antes de filtrar,
-  # para poder detectar columnas todo-NA provenientes de padres de opción múltiple)
-  cols_q_idx <- stringr::str_detect(names(dat), "^Q\\d+")
-  dat_q <- dat[, cols_q_idx, drop = FALSE]
-  dat_q <- as.data.frame(lapply(dat_q, function(x) suppressWarnings(as.numeric(as.character(x)))))
+  # --- Seleccionar columnas Q, forzar numérico ---
+  cols_q <- stringr::str_detect(names(dat), "^Q\\d+")
+  dat_q  <- dat[, cols_q, drop = FALSE]
+  dat_q  <- as.data.frame(lapply(dat_q,
+               function(x) suppressWarnings(as.numeric(as.character(x)))))
 
-  # Eliminar columnas donde el 100% son NA:
-  # Corresponden a preguntas "padre" de opción múltiple cuya data real
-  # está en los sub-ítems (Q10_LAPTOP, Q10_AUTO, etc.)
+  # --- Descartar columnas 100% NA (padres de opción múltiple) ---
   todo_na <- colMeans(is.na(dat_q)) == 1
-  if (any(todo_na)) {
-    cat(sprintf("  [INFO] Columnas padre descartadas (100%% NA): %s\n",
+  if (any(todo_na))
+    cat(sprintf("  [INFO] Columnas padre 100%% NA descartadas: %s\n",
                 paste(names(dat_q)[todo_na], collapse = ", ")))
-    dat_q <- dat_q[, !todo_na, drop = FALSE]
+  dat_q <- dat_q[, !todo_na, drop = FALSE]
+  if (ncol(dat_q) == 0) { warning("Sin columnas con datos en: ", ruta); return(NULL) }
+
+  # --- Aplicar crosswalk ---
+  if (is.null(mapa_cw)) {
+    # Sin crosswalk: devolver todas las columnas Q sin filtrar
+    attr(dat_q, "tipo_item") <- setNames(rep("SIN_CROSSWALK", ncol(dat_q)), names(dat_q))
+    return(dat_q)
   }
 
-  if (ncol(dat_q) == 0) {
-    warning("Sin columnas con datos en: ", ruta); return(NULL)
+  if (ciclo == "2425") {
+    # EXACTO: renombrar code_2425 → canon (code_2526)
+    cols_exacto   <- mapa_cw$exacto$code_2425
+    nombres_canon <- mapa_cw$exacto$canon
+    # SIN_MATCH: conservar con nombre original (= canon para este ciclo)
+    cols_sin_match <- mapa_cw$sin_match$canon
+
+    cols_usar <- c(cols_exacto, cols_sin_match)
+    cols_disponibles <- intersect(cols_usar, names(dat_q))
+
+    if (length(cols_disponibles) == 0) {
+      warning("Ninguna columna del crosswalk encontrada en: ", ruta)
+      return(NULL)
+    }
+
+    dat_out <- dat_q[, cols_disponibles, drop = FALSE]
+
+    # Renombrar EXACTO a nombre canónico
+    idx_exacto <- match(mapa_cw$exacto$code_2425, names(dat_out))
+    idx_valido <- !is.na(idx_exacto)
+    names(dat_out)[idx_exacto[idx_valido]] <- mapa_cw$exacto$canon[idx_valido]
+
+    # Etiqueta de tipo por columna (para la tabla de resultados)
+    tipo_vec <- ifelse(names(dat_out) %in% mapa_cw$exacto$canon,
+                       "EXACTO", "SIN_MATCH")
+    attr(dat_out, "tipo_item") <- setNames(tipo_vec, names(dat_out))
+
+    n_ex <- sum(tipo_vec == "EXACTO")
+    n_sm <- sum(tipo_vec == "SIN_MATCH")
+    cat(sprintf("  [2425] %d EXACTO + %d SIN_MATCH seleccionados (%d en datos)\n",
+                n_ex, n_sm, ncol(dat_out)))
+
+  } else {  # ciclo == "2526"
+    # EXACTO: nombre ya es canónico (code_2526)
+    cols_exacto <- mapa_cw$exacto$canon
+    # NUEVO: solo existe en 2526
+    cols_nuevo  <- mapa_cw$nuevo$canon
+
+    cols_usar        <- c(cols_exacto, cols_nuevo)
+    cols_disponibles <- intersect(cols_usar, names(dat_q))
+
+    if (length(cols_disponibles) == 0) {
+      warning("Ninguna columna del crosswalk encontrada en: ", ruta)
+      return(NULL)
+    }
+
+    dat_out <- dat_q[, cols_disponibles, drop = FALSE]
+
+    tipo_vec <- ifelse(names(dat_out) %in% cols_exacto, "EXACTO", "NUEVO")
+    attr(dat_out, "tipo_item") <- setNames(tipo_vec, names(dat_out))
+
+    n_ex <- sum(tipo_vec == "EXACTO")
+    n_nv <- sum(tipo_vec == "NUEVO")
+    cat(sprintf("  [2526] %d EXACTO + %d NUEVO seleccionados (%d en datos)\n",
+                n_ex, n_nv, ncol(dat_out)))
   }
 
-  # Aplicar crosswalk: renombrar códigos del ciclo al esquema canónico del otro
-  # (solo cuando se proporciona mapa_cw)
-  if (!is.null(mapa_cw)) {
-    n_antes <- ncol(dat_q)
-    dat_q   <- aplicar_crosswalk(dat_q, ciclo, mapa_cw)
-    n_mapeados <- sum(names(dat_q) != names(dat_q))  # columnas renombradas
-    cat(sprintf("  [CROSSWALK] %d/%d columnas renombradas al esquema canónico\n",
-                sum(names(dat_q) != names(dat_q[, seq_len(n_antes)])), n_antes))
-  }
-
-  dat_q
+  dat_out
 }
 
 #' Construye el catálogo de archivos disponibles para los dos ciclos.
@@ -353,9 +398,18 @@ analizar_items <- function(datos, etiqueta, max_item = NULL) {
   items_ok <- diag_na$Item[diag_na$flag_NA == "OK"]
   datos_limpios <- datos[, items_ok, drop = FALSE]
 
+  # Recuperar tipo_item del atributo (EXACTO / NUEVO / SIN_MATCH / SIN_CROSSWALK)
+  tipo_item_attr <- attr(datos, "tipo_item")
+  tipo_item_vec  <- if (!is.null(tipo_item_attr)) {
+    tipo_item_attr[names(datos)]
+  } else {
+    setNames(rep("SIN_CROSSWALK", ncol(datos)), names(datos))
+  }
+
   tabla <- data.frame(
     Item        = names(datos),
-    max_escala  = max_por_item[names(datos)],  # máximo teórico de cada ítem (0-3 o 0-4)
+    tipo_item   = tipo_item_vec,            # EXACTO / NUEVO / SIN_MATCH
+    max_escala  = max_por_item[names(datos)],
     pct_NA      = diag_na$pct_NA,
     flag_NA     = diag_na$flag_NA,
     stringsAsFactors = FALSE
@@ -558,48 +612,113 @@ analizar_items <- function(datos, etiqueta, max_item = NULL) {
 #' @param tabla_B  resultado de analizar_items() para ciclo 2526
 #' @return data.frame comparativo
 
+#' Compara resultados psicométricos entre ciclos respetando el tipo de ítem.
+#'
+#' Produce un data.frame con tres grupos de filas claramente separados:
+#'   1. EXACTO    — ítem existe en ambos ciclos: muestra indicadores lado a lado
+#'                  + semáforo de consistencia + decisión_recomendada
+#'   2. SIN_MATCH — ítem solo en 2425: indicadores del ciclo A, sin comparación
+#'   3. NUEVO     — ítem solo en 2526: indicadores del ciclo B, sin comparación
+#'
+#' @param tabla_A  resultado de analizar_items() para ciclo 2425
+#' @param tabla_B  resultado de analizar_items() para ciclo 2526
+
 comparar_ciclos <- function(tabla_A, tabla_B, ciclo_A = "2425", ciclo_B = "2526") {
 
   sufA <- paste0("_", ciclo_A)
   sufB <- paste0("_", ciclo_B)
 
-  indicadores_clave <- c("pct_NA", "p_dificultad", "ritc", "alpha_sin_item",
-                         "b_Rasch", "infit_MNSQ", "outfit_MNSQ",
-                         "a_GRM", "info_theta0_GRM", "comunalidad_EFA",
-                         "estabilidad_EGA", "votos_eliminacion", "decision_final")
+  indicadores <- c("tipo_item", "pct_NA", "p_dificultad", "ritc", "alpha_sin_item",
+                   "b_Rasch", "infit_MNSQ", "outfit_MNSQ",
+                   "a_GRM", "info_theta0_GRM", "comunalidad_EFA",
+                   "estabilidad_EGA", "votos_eliminacion", "decision_final")
 
-  cols_A <- intersect(indicadores_clave, names(tabla_A))
-  cols_B <- intersect(indicadores_clave, names(tabla_B))
+  # Helper: extraer columnas disponibles con sufijo
+  preparar <- function(tabla, sufijo) {
+    cols <- intersect(indicadores, names(tabla))
+    df   <- tabla[, c("Item", cols), drop = FALSE]
+    names(df)[names(df) != "Item"] <- paste0(names(df)[names(df) != "Item"], sufijo)
+    df
+  }
 
-  df_A <- tabla_A[, c("Item", cols_A)]
-  df_B <- tabla_B[, c("Item", cols_B)]
+  df_A <- preparar(tabla_A, sufA)
+  df_B <- preparar(tabla_B, sufB)
 
-  names(df_A)[-1] <- paste0(names(df_A)[-1], sufA)
-  names(df_B)[-1] <- paste0(names(df_B)[-1], sufB)
+  tipo_A_col <- paste0("tipo_item", sufA)
+  tipo_B_col <- paste0("tipo_item", sufB)
+  dec_A_col  <- paste0("decision_final", sufA)
+  dec_B_col  <- paste0("decision_final", sufB)
 
-  comp <- dplyr::full_join(df_A, df_B, by = "Item")
+  # --- Grupo 1: EXACTO — ítems presentes en ambos ciclos ---
+  items_exacto_A <- tabla_A$Item[!is.na(tabla_A$tipo_item) & tabla_A$tipo_item == "EXACTO"]
+  items_exacto_B <- tabla_B$Item[!is.na(tabla_B$tipo_item) & tabla_B$tipo_item == "EXACTO"]
+  items_exacto   <- intersect(items_exacto_A, items_exacto_B)
 
-  # Semáforo de consistencia
-  dec_A_col <- paste0("decision_final", sufA)
-  dec_B_col <- paste0("decision_final", sufB)
+  if (length(items_exacto) > 0) {
+    comp_exacto <- dplyr::inner_join(
+      df_A[df_A$Item %in% items_exacto, ],
+      df_B[df_B$Item %in% items_exacto, ],
+      by = "Item"
+    )
+    comp_exacto$grupo <- "EXACTO"
 
-  comp$consistencia <- dplyr::case_when(
-    is.na(comp[[dec_A_col]]) | is.na(comp[[dec_B_col]]) ~ "Solo un ciclo",
-    comp[[dec_A_col]] == comp[[dec_B_col]] &
-      comp[[dec_A_col]] == "ELIMINAR"    ~ "Ambos: ELIMINAR",
-    comp[[dec_A_col]] == comp[[dec_B_col]] &
-      comp[[dec_A_col]] == "Conservar"   ~ "Ambos: Conservar",
-    TRUE                                 ~ "Discordante"
-  )
+    # Semáforo de consistencia entre ciclos
+    comp_exacto$consistencia <- dplyr::case_when(
+      is.na(comp_exacto[[dec_A_col]]) | is.na(comp_exacto[[dec_B_col]]) ~ "Un ciclo sin dato",
+      comp_exacto[[dec_A_col]] == "ELIMINAR" & comp_exacto[[dec_B_col]] == "ELIMINAR" ~ "Ambos: ELIMINAR",
+      comp_exacto[[dec_A_col]] == "Conservar" & comp_exacto[[dec_B_col]] == "Conservar" ~ "Ambos: Conservar",
+      TRUE ~ "Discordante"
+    )
+    comp_exacto$decision_recomendada <- dplyr::case_when(
+      comp_exacto$consistencia == "Ambos: ELIMINAR"  ~ "ELIMINAR",
+      comp_exacto$consistencia == "Ambos: Conservar" ~ "Conservar",
+      comp_exacto$consistencia == "Discordante"      ~ "REVISAR (ciclos discordantes)",
+      TRUE                                           ~ "REVISAR (dato faltante)"
+    )
+  } else {
+    comp_exacto <- data.frame()
+  }
 
-  comp$decision_recomendada <- dplyr::case_when(
-    comp$consistencia == "Ambos: ELIMINAR"  ~ "ELIMINAR",
-    comp$consistencia == "Ambos: Conservar" ~ "Conservar",
-    comp$consistencia == "Discordante"      ~ "REVISAR (ciclos discordantes)",
-    TRUE                                    ~ "REVISAR (solo un ciclo)"
-  )
+  # --- Grupo 2: SIN_MATCH — solo en 2425 ---
+  items_sin_match <- tabla_A$Item[!is.na(tabla_A$tipo_item) & tabla_A$tipo_item == "SIN_MATCH"]
+  if (length(items_sin_match) > 0) {
+    comp_sin_match <- df_A[df_A$Item %in% items_sin_match, ]
+    comp_sin_match$grupo             <- "SIN_MATCH (solo 2425)"
+    comp_sin_match$consistencia      <- "Solo 2425"
+    comp_sin_match$decision_recomendada <- ifelse(
+      !is.na(comp_sin_match[[dec_A_col]]) & comp_sin_match[[dec_A_col]] == "ELIMINAR",
+      "ELIMINAR", "Conservar (revisar en 2526)")
+  } else {
+    comp_sin_match <- data.frame()
+  }
 
-  comp
+  # --- Grupo 3: NUEVO — solo en 2526 ---
+  items_nuevo <- tabla_B$Item[!is.na(tabla_B$tipo_item) & tabla_B$tipo_item == "NUEVO"]
+  if (length(items_nuevo) > 0) {
+    comp_nuevo <- df_B[df_B$Item %in% items_nuevo, ]
+    comp_nuevo$grupo                <- "NUEVO (solo 2526)"
+    comp_nuevo$consistencia         <- "Solo 2526"
+    comp_nuevo$decision_recomendada <- ifelse(
+      !is.na(comp_nuevo[[dec_B_col]]) & comp_nuevo[[dec_B_col]] == "ELIMINAR",
+      "ELIMINAR", "Conservar (nuevo ítem)")
+  } else {
+    comp_nuevo <- data.frame()
+  }
+
+  # Unir los tres grupos (bind_rows rellena con NA las columnas faltantes)
+  comp_total <- dplyr::bind_rows(comp_exacto, comp_sin_match, comp_nuevo)
+
+  # Reordenar: grupo + Item al frente
+  cols_frente <- c("grupo", "Item", "consistencia", "decision_recomendada")
+  resto       <- setdiff(names(comp_total), cols_frente)
+  comp_total  <- comp_total[, c(cols_frente, resto)]
+
+  n_ex <- nrow(comp_exacto)
+  n_sm <- nrow(comp_sin_match)
+  n_nv <- nrow(comp_nuevo)
+  cat(sprintf("  [COMPARACION] %d EXACTO | %d SIN_MATCH | %d NUEVO\n", n_ex, n_sm, n_nv))
+
+  comp_total
 }
 
 # =============================================================================
@@ -607,54 +726,70 @@ comparar_ciclos <- function(tabla_A, tabla_B, ciclo_A = "2425", ciclo_B = "2526"
 # =============================================================================
 
 COLORES <- list(
-  eliminar   = list(fg = "#FFCCCC", font = "#CC0000"),
-  conservar  = list(fg = "#CCFFCC", font = "#006600"),
-  revisar    = list(fg = "#FFF3CC", font = "#856404"),
-  insuf      = list(fg = "#E0E0E0", font = "#555555"),
-  header     = list(fg = "#1F3864", font = "#FFFFFF")
+  eliminar    = list(fg = "#FFCCCC", font = "#CC0000"),
+  conservar   = list(fg = "#CCFFCC", font = "#006600"),
+  revisar     = list(fg = "#FFF3CC", font = "#856404"),
+  insuf       = list(fg = "#E0E0E0", font = "#555555"),
+  header      = list(fg = "#1F3864", font = "#FFFFFF"),
+  exacto      = list(fg = "#FFFFFF", font = "#000000"),   # blanco — ítems comparables
+  sin_match   = list(fg = "#FFF3CC", font = "#856404"),   # amarillo — solo 2425
+  nuevo       = list(fg = "#DDEBF7", font = "#1F3864")    # azul claro — solo 2526
 )
 
+# Aplica relleno por valor en col_decision
 estilo_decision <- function(wb, hoja, tabla, col_decision) {
-  for (tipo in c("ELIMINAR", "Conservar", "REVISAR.*", "DATOS_INSUF.*")) {
-    patron <- tipo
-    col_def <- switch(
-      gsub("\\.", "", tipo),
-      "ELIMINAR"     = COLORES$eliminar,
-      "Conservar"    = COLORES$conservar,
-      "REVISAR"      = COLORES$revisar,
-      "DATOSINSUF"   = COLORES$insuf,
-      COLORES$revisar
-    )
-    filas <- which(grepl(patron, tabla[[col_decision]])) + 1
+  reglas <- list(
+    list(patron = "^ELIMINAR$",        col = COLORES$eliminar),
+    list(patron = "^Conservar",        col = COLORES$conservar),
+    list(patron = "^REVISAR",          col = COLORES$revisar),
+    list(patron = "DATOS_INSUF",       col = COLORES$insuf)
+  )
+  for (r in reglas) {
+    filas <- which(grepl(r$patron, tabla[[col_decision]])) + 1
     if (length(filas) == 0) next
-    estilo <- openxlsx::createStyle(
-      fgFill       = col_def$fg,
-      fontColour   = col_def$font,
-      textDecoration = "bold"
-    )
-    openxlsx::addStyle(wb, hoja, style = estilo,
-                       rows = filas, cols = 1:ncol(tabla),
-                       gridExpand = TRUE)
+    openxlsx::addStyle(wb, hoja,
+      style = openxlsx::createStyle(fgFill = r$col$fg, fontColour = r$col$font,
+                                    textDecoration = "bold"),
+      rows = filas, cols = 1:ncol(tabla), gridExpand = TRUE)
+  }
+}
+
+# Aplica relleno de fondo por grupo en la hoja comparativa
+estilo_grupo <- function(wb, hoja, tabla) {
+  if (!"grupo" %in% names(tabla)) return(invisible())
+  reglas <- list(
+    list(patron = "^EXACTO$",      col = COLORES$exacto),
+    list(patron = "SIN_MATCH",     col = COLORES$sin_match),
+    list(patron = "NUEVO",         col = COLORES$nuevo)
+  )
+  for (r in reglas) {
+    filas <- which(grepl(r$patron, tabla$grupo)) + 1
+    if (length(filas) == 0) next
+    openxlsx::addStyle(wb, hoja,
+      style = openxlsx::createStyle(fgFill = r$col$fg, fontColour = r$col$font),
+      rows = filas, cols = 1:ncol(tabla), gridExpand = TRUE)
   }
 }
 
 agregar_hoja_tabla <- function(wb, nombre_hoja, tabla, col_decision = "decision_final") {
-  nombre_hoja <- substr(nombre_hoja, 1, 31)  # Excel: máx 31 chars
+  nombre_hoja <- substr(nombre_hoja, 1, 31)
   openxlsx::addWorksheet(wb, nombre_hoja)
   openxlsx::writeData(wb, nombre_hoja, tabla)
 
   # Encabezado
-  hdr_estilo <- openxlsx::createStyle(
-    fgFill = COLORES$header$fg, fontColour = COLORES$header$font,
-    textDecoration = "bold", halign = "center"
-  )
-  openxlsx::addStyle(wb, nombre_hoja, hdr_estilo,
-                     rows = 1, cols = 1:ncol(tabla), gridExpand = TRUE)
+  openxlsx::addStyle(wb, nombre_hoja,
+    style = openxlsx::createStyle(fgFill = COLORES$header$fg,
+                                  fontColour = COLORES$header$font,
+                                  textDecoration = "bold", halign = "center"),
+    rows = 1, cols = 1:ncol(tabla), gridExpand = TRUE)
   openxlsx::setColWidths(wb, nombre_hoja, cols = 1:ncol(tabla), widths = "auto")
 
-  if (col_decision %in% names(tabla)) {
+  # Colorear por grupo (EXACTO / SIN_MATCH / NUEVO) — hoja comparativa
+  estilo_grupo(wb, nombre_hoja, tabla)
+
+  # Colorear por decisión (sobreescribe el color de grupo en esa columna)
+  if (col_decision %in% names(tabla))
     estilo_decision(wb, nombre_hoja, tabla, col_decision)
-  }
 }
 
 # =============================================================================
