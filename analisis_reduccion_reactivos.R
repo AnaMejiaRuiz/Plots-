@@ -239,59 +239,52 @@ cargar_base <- function(ruta, ciclo, mapa_cw = NULL) {
 
   if (ciclo == "2425") {
     # EXACTO: renombrar code_2425 → canon (code_2526)
-    cols_exacto   <- mapa_cw$exacto$code_2425
-    nombres_canon <- mapa_cw$exacto$canon
-    # SIN_MATCH: conservar con nombre original (= canon para este ciclo)
+    cols_exacto    <- mapa_cw$exacto$code_2425
+    nombres_canon  <- mapa_cw$exacto$canon
     cols_sin_match <- mapa_cw$sin_match$canon
 
-    cols_usar <- c(cols_exacto, cols_sin_match)
-    cols_disponibles <- intersect(cols_usar, names(dat_q))
+    # Partir de TODAS las columnas disponibles
+    dat_out  <- dat_q
+    tipo_vec <- setNames(rep("SIN_CROSSWALK", ncol(dat_out)), names(dat_out))
 
-    if (length(cols_disponibles) == 0) {
-      warning("Ninguna columna del crosswalk encontrada en: ", ruta)
-      return(NULL)
+    # Renombrar EXACTO → nombre canónico y etiquetar
+    idx_ex <- match(cols_exacto, names(dat_out))
+    for (k in seq_along(idx_ex)) {
+      if (!is.na(idx_ex[k])) {
+        names(dat_out)[idx_ex[k]]  <- nombres_canon[k]
+        tipo_vec[nombres_canon[k]] <- "EXACTO"
+      }
     }
+    # Etiquetar SIN_MATCH (ya tienen nombre canónico = nombre original 2425)
+    tipo_vec[names(dat_out) %in% cols_sin_match] <- "SIN_MATCH"
 
-    dat_out <- dat_q[, cols_disponibles, drop = FALSE]
-
-    # Renombrar EXACTO a nombre canónico
-    idx_exacto <- match(mapa_cw$exacto$code_2425, names(dat_out))
-    idx_valido <- !is.na(idx_exacto)
-    names(dat_out)[idx_exacto[idx_valido]] <- mapa_cw$exacto$canon[idx_valido]
-
-    # Etiqueta de tipo por columna (para la tabla de resultados)
-    tipo_vec <- ifelse(names(dat_out) %in% mapa_cw$exacto$canon,
-                       "EXACTO", "SIN_MATCH")
-    attr(dat_out, "tipo_item") <- setNames(tipo_vec, names(dat_out))
+    attr(dat_out, "tipo_item") <- tipo_vec
 
     n_ex <- sum(tipo_vec == "EXACTO")
     n_sm <- sum(tipo_vec == "SIN_MATCH")
-    cat(sprintf("  [2425] %d EXACTO + %d SIN_MATCH seleccionados (%d en datos)\n",
-                n_ex, n_sm, ncol(dat_out)))
+    n_sc <- sum(tipo_vec == "SIN_CROSSWALK")
+    cat(sprintf("  [2425] %d EXACTO + %d SIN_MATCH + %d SIN_CROSSWALK (%d en datos)\n",
+                n_ex, n_sm, n_sc, ncol(dat_out)))
 
   } else {  # ciclo == "2526"
     # EXACTO: nombre ya es canónico (code_2526)
     cols_exacto <- mapa_cw$exacto$canon
-    # NUEVO: solo existe en 2526
     cols_nuevo  <- mapa_cw$nuevo$canon
 
-    cols_usar        <- c(cols_exacto, cols_nuevo)
-    cols_disponibles <- intersect(cols_usar, names(dat_q))
+    # Partir de TODAS las columnas disponibles
+    dat_out  <- dat_q
+    tipo_vec <- setNames(rep("SIN_CROSSWALK", ncol(dat_out)), names(dat_out))
 
-    if (length(cols_disponibles) == 0) {
-      warning("Ninguna columna del crosswalk encontrada en: ", ruta)
-      return(NULL)
-    }
+    tipo_vec[names(dat_out) %in% cols_exacto] <- "EXACTO"
+    tipo_vec[names(dat_out) %in% cols_nuevo]  <- "NUEVO"
 
-    dat_out <- dat_q[, cols_disponibles, drop = FALSE]
-
-    tipo_vec <- ifelse(names(dat_out) %in% cols_exacto, "EXACTO", "NUEVO")
-    attr(dat_out, "tipo_item") <- setNames(tipo_vec, names(dat_out))
+    attr(dat_out, "tipo_item") <- tipo_vec
 
     n_ex <- sum(tipo_vec == "EXACTO")
     n_nv <- sum(tipo_vec == "NUEVO")
-    cat(sprintf("  [2526] %d EXACTO + %d NUEVO seleccionados (%d en datos)\n",
-                n_ex, n_nv, ncol(dat_out)))
+    n_sc <- sum(tipo_vec == "SIN_CROSSWALK")
+    cat(sprintf("  [2526] %d EXACTO + %d NUEVO + %d SIN_CROSSWALK (%d en datos)\n",
+                n_ex, n_nv, n_sc, ncol(dat_out)))
   }
 
   dat_out
@@ -848,8 +841,27 @@ comparar_ciclos <- function(tabla_A, tabla_B, ciclo_A = "2425", ciclo_B = "2526"
     comp_nuevo <- data.frame()
   }
 
-  # Unir los tres grupos (bind_rows rellena con NA las columnas faltantes)
-  comp_total <- dplyr::bind_rows(comp_exacto, comp_sin_match, comp_nuevo)
+  # --- Grupo 4: SIN_CROSSWALK — en datos pero sin entrada en el crosswalk ---
+  items_sc_A <- tabla_A$Item[!is.na(tabla_A$tipo_item) & tabla_A$tipo_item == "SIN_CROSSWALK"]
+  items_sc_B <- tabla_B$Item[!is.na(tabla_B$tipo_item) & tabla_B$tipo_item == "SIN_CROSSWALK"]
+  items_sc   <- union(items_sc_A, items_sc_B)
+
+  if (length(items_sc) > 0) {
+    sc_A <- if (length(items_sc_A) > 0) df_A[df_A$Item %in% items_sc_A, ] else data.frame()
+    sc_B <- if (length(items_sc_B) > 0) df_B[df_B$Item %in% items_sc_B, ] else data.frame()
+    comp_sc <- dplyr::bind_rows(sc_A, sc_B)
+    comp_sc$grupo                <- "SIN_CROSSWALK"
+    comp_sc$consistencia         <- "Fuera del crosswalk"
+    comp_sc$decision_recomendada <- ifelse(
+      !is.na(comp_sc[[dec_A_col]]) & comp_sc[[dec_A_col]] == "ELIMINAR" |
+      !is.na(comp_sc[[dec_B_col]]) & comp_sc[[dec_B_col]] == "ELIMINAR",
+      "REVISAR (sin validación)", "REVISAR (sin validación)")
+  } else {
+    comp_sc <- data.frame()
+  }
+
+  # Unir los cuatro grupos (bind_rows rellena con NA las columnas faltantes)
+  comp_total <- dplyr::bind_rows(comp_exacto, comp_sin_match, comp_nuevo, comp_sc)
 
   # Reordenar: grupo + Item al frente (solo columnas que existan)
   cols_frente <- intersect(c("grupo", "Item", "consistencia", "decision_recomendada"),
@@ -860,7 +872,9 @@ comparar_ciclos <- function(tabla_A, tabla_B, ciclo_A = "2425", ciclo_B = "2526"
   n_ex <- nrow(comp_exacto)
   n_sm <- nrow(comp_sin_match)
   n_nv <- nrow(comp_nuevo)
-  cat(sprintf("  [COMPARACION] %d EXACTO | %d SIN_MATCH | %d NUEVO\n", n_ex, n_sm, n_nv))
+  n_sc <- nrow(comp_sc)
+  cat(sprintf("  [COMPARACION] %d EXACTO | %d SIN_MATCH | %d NUEVO | %d SIN_CROSSWALK\n",
+              n_ex, n_sm, n_nv, n_sc))
 
   comp_total
 }
@@ -870,14 +884,15 @@ comparar_ciclos <- function(tabla_A, tabla_B, ciclo_A = "2425", ciclo_B = "2526"
 # =============================================================================
 
 COLORES <- list(
-  eliminar    = list(fg = "#FFCCCC", font = "#CC0000"),
-  conservar   = list(fg = "#CCFFCC", font = "#006600"),
-  revisar     = list(fg = "#FFF3CC", font = "#856404"),
-  insuf       = list(fg = "#E0E0E0", font = "#555555"),
-  header      = list(fg = "#1F3864", font = "#FFFFFF"),
-  exacto      = list(fg = "#FFFFFF", font = "#000000"),   # blanco — ítems comparables
-  sin_match   = list(fg = "#FFF3CC", font = "#856404"),   # amarillo — solo 2425
-  nuevo       = list(fg = "#DDEBF7", font = "#1F3864")    # azul claro — solo 2526
+  eliminar      = list(fg = "#FFCCCC", font = "#CC0000"),
+  conservar     = list(fg = "#CCFFCC", font = "#006600"),
+  revisar       = list(fg = "#FFF3CC", font = "#856404"),
+  insuf         = list(fg = "#E0E0E0", font = "#555555"),
+  header        = list(fg = "#1F3864", font = "#FFFFFF"),
+  exacto        = list(fg = "#FFFFFF", font = "#000000"),   # blanco — en ambos ciclos
+  sin_match     = list(fg = "#FFF3CC", font = "#856404"),   # amarillo — solo 2425
+  nuevo         = list(fg = "#DDEBF7", font = "#1F3864"),   # azul claro — solo 2526
+  sin_crosswalk = list(fg = "#F2F2F2", font = "#666666")    # gris claro — fuera del crosswalk
 )
 
 # Aplica relleno por valor en col_decision
@@ -902,9 +917,10 @@ estilo_decision <- function(wb, hoja, tabla, col_decision) {
 estilo_grupo <- function(wb, hoja, tabla) {
   if (!"grupo" %in% names(tabla)) return(invisible())
   reglas <- list(
-    list(patron = "^EXACTO$",      col = COLORES$exacto),
-    list(patron = "SIN_MATCH",     col = COLORES$sin_match),
-    list(patron = "NUEVO",         col = COLORES$nuevo)
+    list(patron = "^EXACTO$",        col = COLORES$exacto),
+    list(patron = "SIN_MATCH",       col = COLORES$sin_match),
+    list(patron = "NUEVO",           col = COLORES$nuevo),
+    list(patron = "SIN_CROSSWALK",   col = COLORES$sin_crosswalk)
   )
   for (r in reglas) {
     filas <- which(grepl(r$patron, tabla$grupo)) + 1
