@@ -825,9 +825,9 @@ ejecutar_combinacion <- function(cuestion, figura, momento = "pre",
   hoja_cw <- paste0(gsub("HSXXI", "SXXI", cuestion), "_", figura)
   mapa_cw <- cargar_crosswalk(hoja_cw)
   if (!is.null(mapa_cw)) {
-    n_match <- sum(!is.na(mapa_cw$code_2425) & !is.na(mapa_cw$code_2526))
-    cat(sprintf("  [CROSSWALK] Hoja '%s': %d correspondencias cargadas\n",
-                hoja_cw, n_match))
+    n_match <- nrow(mapa_cw$exacto)
+    cat(sprintf("  [CROSSWALK] Hoja '%s': %d EXACTO | %d NUEVO | %d SIN_MATCH\n",
+                hoja_cw, nrow(mapa_cw$exacto), nrow(mapa_cw$nuevo), nrow(mapa_cw$sin_match)))
   } else {
     cat(sprintf("  [CROSSWALK] Sin mapa para '%s' — comparación usará códigos originales\n",
                 hoja_cw))
