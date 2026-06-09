@@ -495,6 +495,18 @@ analizar_items <- function(datos, etiqueta, max_item = NULL) {
     tabla <- dplyr::left_join(tabla, tct_df, by = "Item")
   }
 
+  # Garantizar que datos_limpios es matriz numérica antes de IRT/EFA/EGA
+  datos_limpios <- as.data.frame(lapply(datos_limpios, function(x) {
+    v <- suppressWarnings(as.numeric(as.character(x)))
+    v
+  }))
+  datos_limpios <- datos_limpios[, sapply(datos_limpios, function(x) !all(is.na(x))), drop = FALSE]
+
+  if (ncol(datos_limpios) < 2) {
+    warning(etiqueta, ": menos de 2 columnas numéricas tras limpieza — análisis omitido.")
+    return(tabla)
+  }
+
   # -------------------------------------------------------------------------
   # 4b. IRT: Rasch (PCM)
   # -------------------------------------------------------------------------
@@ -530,14 +542,26 @@ analizar_items <- function(datos, etiqueta, max_item = NULL) {
     grm_type <- if (all(max_por_item <= 1, na.rm = TRUE)) "2PL" else "graded"
     mod_grm <- mirt::mirt(datos_limpios, model = 1,
                           itemtype = grm_type, verbose = FALSE)
-    params_g <- mirt::coef(mod_grm, IRTpars = TRUE, simplify = TRUE)$items
+    coef_g   <- mirt::coef(mod_grm, IRTpars = TRUE, simplify = TRUE)$items
+    # coef puede ser matriz (graded, múltiples ítems) o vector con nombre (2PL, 1 ítem)
+    if (is.matrix(coef_g)) {
+      items_g <- rownames(coef_g)
+      a_vals  <- as.numeric(coef_g[, "a"])
+    } else {
+      items_g <- names(mirt::coef(mod_grm, IRTpars = TRUE))
+      items_g <- items_g[items_g != "GroupPars"]
+      a_vals  <- sapply(items_g, function(nm) {
+        v <- mirt::coef(mod_grm, IRTpars = TRUE)[[nm]]
+        if (is.matrix(v)) as.numeric(v[1, "a"]) else as.numeric(v["a"])
+      })
+    }
     info_g   <- mirt::iteminfo(mod_grm, Theta = matrix(0))
 
     grm_df <- data.frame(
-      Item            = rownames(params_g),
-      a_GRM           = round(params_g[, "a"], 3),
+      Item            = items_g,
+      a_GRM           = round(a_vals, 3),
       info_theta0_GRM = round(as.numeric(info_g), 3),
-      eliminar_GRM    = ifelse(params_g[, "a"] < CONFIG$umbral_a_grm,
+      eliminar_GRM    = ifelse(a_vals < CONFIG$umbral_a_grm,
                                "ELIMINAR", "Conservar"),
       stringsAsFactors = FALSE
     )
@@ -999,14 +1023,16 @@ generar_justificacion <- function(fila, claves_cm) {
     if (is.na(dec) || dec != "ELIMINAR") next
 
     # Detectar qué criterios fallaron
+    # apply() convierte todo a character; forzar numérico antes de comparar
+    n <- function(x) suppressWarnings(as.numeric(x))
     problemas <- c()
-    pna   <- fila[[paste0(cm, "_pct_NA")]];       if (!is.na(pna)  && pna  > CONFIG$umbral_NA_pct)    problemas <- c(problemas, sprintf("NA=%.0f%%", pna))
-    ritc  <- fila[[paste0(cm, "_ritc")]];          if (!is.na(ritc) && ritc < CONFIG$umbral_ritc)       problemas <- c(problemas, sprintf("ritc=%.2f", ritc))
-    inf   <- fila[[paste0(cm, "_infit_MNSQ")]];   if (!is.na(inf)  && inf  > CONFIG$umbral_infit)      problemas <- c(problemas, sprintf("infit=%.2f", inf))
-    out   <- fila[[paste0(cm, "_outfit_MNSQ")]];  if (!is.na(out)  && out  > CONFIG$umbral_outfit)     problemas <- c(problemas, sprintf("outfit=%.2f", out))
-    agrm  <- fila[[paste0(cm, "_a_GRM")]];        if (!is.na(agrm) && agrm < CONFIG$umbral_a_grm)      problemas <- c(problemas, sprintf("a_GRM=%.2f", agrm))
-    com   <- fila[[paste0(cm, "_comunalidad_EFA")]]; if (!is.na(com) && com < CONFIG$umbral_comunalidad) problemas <- c(problemas, sprintf("h2=%.2f", com))
-    est   <- fila[[paste0(cm, "_estabilidad_EGA")]]; if (!is.na(est) && est < CONFIG$umbral_estabilidad) problemas <- c(problemas, sprintf("estab=%.2f", est))
+    pna   <- n(fila[[paste0(cm, "_pct_NA")]]);          if (!is.na(pna)  && pna  > CONFIG$umbral_NA_pct)     problemas <- c(problemas, sprintf("NA=%.0f%%",  pna))
+    ritc  <- n(fila[[paste0(cm, "_ritc")]]);             if (!is.na(ritc) && ritc < CONFIG$umbral_ritc)        problemas <- c(problemas, sprintf("ritc=%.2f",  ritc))
+    inf   <- n(fila[[paste0(cm, "_infit_MNSQ")]]);      if (!is.na(inf)  && inf  > CONFIG$umbral_infit)       problemas <- c(problemas, sprintf("infit=%.2f", inf))
+    out   <- n(fila[[paste0(cm, "_outfit_MNSQ")]]);     if (!is.na(out)  && out  > CONFIG$umbral_outfit)      problemas <- c(problemas, sprintf("outfit=%.2f",out))
+    agrm  <- n(fila[[paste0(cm, "_a_GRM")]]);           if (!is.na(agrm) && agrm < CONFIG$umbral_a_grm)       problemas <- c(problemas, sprintf("a_GRM=%.2f", agrm))
+    com   <- n(fila[[paste0(cm, "_comunalidad_EFA")]]); if (!is.na(com)  && com  < CONFIG$umbral_comunalidad) problemas <- c(problemas, sprintf("h2=%.2f",    com))
+    est   <- n(fila[[paste0(cm, "_estabilidad_EGA")]]); if (!is.na(est)  && est  < CONFIG$umbral_estabilidad) problemas <- c(problemas, sprintf("estab=%.2f", est))
 
     if (length(problemas) > 0)
       razones <- c(razones, paste0("[", cm, ": ", paste(problemas, collapse=", "), "]"))
