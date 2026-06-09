@@ -90,17 +90,111 @@ VALORES_NA <- c(
 dir.create(CONFIG$dir_salida, showWarnings = FALSE, recursive = TRUE)
 
 # =============================================================================
-# 2. CARGA Y ESTANDARIZACIÓN DE DATOS
+# 2. CROSSWALK DE VARIABLES ENTRE CICLOS
+# =============================================================================
+# Los números de pregunta (Q1, Q2...) NO son estables entre ciclos:
+#   - El mismo constructo tiene código distinto en 2424-2025 y 2025-2026
+#   - En 2425 las opciones múltiples son sub-ítems (Q10_LAPTOP); en 2526
+#     cada opción tiene su propio Q secuencial (Q14, Q15...)
+#
+# El crosswalk mapea código_2425 ↔ código_2526 por cuestionario/figura.
+# Se genera automáticamente con similitud de texto y requiere validación experta.
+#
+# ARCHIVO: crosswalk_variables_2425_2526.xlsx (misma carpeta que este script)
+# Columnas clave: hoja | code_2425 | code_2526 | tipo_match | validado
+
+CROSSWALK_PATH <- file.path(
+  dirname(sys.frame(1)$ofile %||% getwd()),
+  "crosswalk_variables_2425_2526.xlsx"
+)
+# Fallback si no se detecta la ruta del script
+if (!file.exists(CROSSWALK_PATH)) {
+  CROSSWALK_PATH <- file.path(CONFIG$dir_datos, "..", "crosswalk_variables_2425_2526.xlsx")
+}
+
+`%||%` <- function(a, b) if (!is.null(a)) a else b
+
+#' Carga el crosswalk y devuelve tabla de mapeo para una hoja específica.
+#' Filtra a ítems validados (validado == "OK" o vacío si aún no se revisó).
+#'
+#' @param hoja  Ej. "CTXT_DIR", "HD_DOC", "SXXI_EST"
+#' @return data.frame con columnas code_2425, code_2526 (NA si sin equivalente)
+
+cargar_crosswalk <- function(hoja) {
+  if (!file.exists(CROSSWALK_PATH)) {
+    warning("Crosswalk no encontrado: ", CROSSWALK_PATH,
+            "\n  La comparación entre ciclos usará códigos crudos (puede ser incorrecta).")
+    return(NULL)
+  }
+  cw <- tryCatch(
+    openxlsx::read.xlsx(CROSSWALK_PATH, sheet = "CROSSWALK_COMPLETO",
+                        na.strings = c("", "NA")),
+    error = function(e) { warning("Error leyendo crosswalk: ", e$message); NULL }
+  )
+  if (is.null(cw)) return(NULL)
+
+  # Normalizar nombre de hoja (espacios → guiones bajos)
+  cw$hoja <- stringr::str_replace_all(cw$hoja, " ", "_")
+  hoja    <- stringr::str_replace_all(hoja, " ", "_")
+
+  sub_cw <- cw[cw$hoja == hoja, ]
+  if (nrow(sub_cw) == 0) {
+    warning("Hoja '", hoja, "' no encontrada en crosswalk.")
+    return(NULL)
+  }
+
+  # Excluir filas marcadas como ELIMINAR y ítems sin match en ninguno de los dos ciclos
+  excluir <- !is.na(sub_cw$validado) & sub_cw$validado == "ELIMINAR"
+  sub_cw  <- sub_cw[!excluir, ]
+
+  sub_cw[, c("code_2425", "code_2526", "tipo_match", "similitud")]
+}
+
+#' Renombra columnas de un data.frame usando el crosswalk para estandarizar
+#' a nombres canónicos "CANON_Qxx" compartidos entre ciclos.
+#'
+#' Para cada par (code_2425, code_2526) se crea un nombre canónico basado
+#' en el código 2526 (que es el ciclo de referencia más reciente).
+#' Columnas sin equivalente en el otro ciclo conservan su código original.
+#'
+#' @param datos  data.frame con columnas nombradas por código de ciclo
+#' @param ciclo  "2425" o "2526"
+#' @param mapa   data.frame devuelto por cargar_crosswalk()
+#' @return data.frame con columnas renombradas a nombres canónicos
+
+aplicar_crosswalk <- function(datos, ciclo, mapa) {
+  if (is.null(mapa)) return(datos)
+
+  col_origen <- if (ciclo == "2425") "code_2425" else "code_2526"
+  col_destino <- if (ciclo == "2425") "code_2526" else "code_2425"
+
+  mapa_valido <- mapa[!is.na(mapa[[col_origen]]) & !is.na(mapa[[col_destino]]),]
+  mapa_vec    <- setNames(mapa_valido[[col_destino]], mapa_valido[[col_origen]])
+
+  nombres_nuevos <- names(datos)
+  for (i in seq_along(nombres_nuevos)) {
+    if (nombres_nuevos[i] %in% names(mapa_vec)) {
+      nombres_nuevos[i] <- mapa_vec[[nombres_nuevos[i]]]
+    }
+  }
+  names(datos) <- nombres_nuevos
+  datos
+}
+
+# =============================================================================
+# 3. CARGA Y ESTANDARIZACIÓN DE DATOS
 # =============================================================================
 
-#' Carga un archivo Excel de respuestas y estandariza nombres de columnas.
-#' Maneja el prefijo PRE_ del ciclo 2425.
+#' Carga un archivo Excel de respuestas, estandariza nombres de columnas,
+#' elimina columnas padre todo-NA (preguntas de opción múltiple contenedor),
+#' y opcionalmente aplica el crosswalk para alinear con el otro ciclo.
 #'
-#' @param ruta  Ruta completa al archivo .xlsx
-#' @param ciclo "2425" o "2526"
-#' @return data.frame con columnas Qn estandarizadas
+#' @param ruta       Ruta completa al archivo .xlsx
+#' @param ciclo      "2425" o "2526"
+#' @param mapa_cw    data.frame de cargar_crosswalk() o NULL para omitir
+#' @return data.frame con columnas Qn/Qn_SUFIJO estandarizadas
 
-cargar_base <- function(ruta, ciclo) {
+cargar_base <- function(ruta, ciclo, mapa_cw = NULL) {
   dat <- tryCatch(
     readxl::read_excel(ruta, na = c("", "NA", "N/A")),
     error = function(e) {
@@ -144,6 +238,17 @@ cargar_base <- function(ruta, ciclo) {
   if (ncol(dat_q) == 0) {
     warning("Sin columnas con datos en: ", ruta); return(NULL)
   }
+
+  # Aplicar crosswalk: renombrar códigos del ciclo al esquema canónico del otro
+  # (solo cuando se proporciona mapa_cw)
+  if (!is.null(mapa_cw)) {
+    n_antes <- ncol(dat_q)
+    dat_q   <- aplicar_crosswalk(dat_q, ciclo, mapa_cw)
+    n_mapeados <- sum(names(dat_q) != names(dat_q))  # columnas renombradas
+    cat(sprintf("  [CROSSWALK] %d/%d columnas renombradas al esquema canónico\n",
+                sum(names(dat_q) != names(dat_q[, seq_len(n_antes)])), n_antes))
+  }
+
   dat_q
 }
 
@@ -579,6 +684,20 @@ ejecutar_combinacion <- function(cuestion, figura, momento = "pre",
   cat("PROCESANDO:", etiq_base, "\n")
   cat(strrep("=", 70), "\n")
 
+  # Cargar crosswalk para alinear códigos entre ciclos
+  # La hoja del crosswalk usa formato CUESTIONARIO_FIGURA (ej. "CTXT_DIR")
+  # HSXXI en las bases corresponde a SXXI en el diccionario
+  hoja_cw <- paste0(gsub("HSXXI", "SXXI", cuestion), "_", figura)
+  mapa_cw <- cargar_crosswalk(hoja_cw)
+  if (!is.null(mapa_cw)) {
+    n_match <- sum(!is.na(mapa_cw$code_2425) & !is.na(mapa_cw$code_2526))
+    cat(sprintf("  [CROSSWALK] Hoja '%s': %d correspondencias cargadas\n",
+                hoja_cw, n_match))
+  } else {
+    cat(sprintf("  [CROSSWALK] Sin mapa para '%s' — comparación usará códigos originales\n",
+                hoja_cw))
+  }
+
   # Buscar archivos en catálogo
   reg <- catalogo %>%
     dplyr::filter(cuestion == !!cuestion,
@@ -598,7 +717,7 @@ ejecutar_combinacion <- function(cuestion, figura, momento = "pre",
     etiq  <- paste0(etiq_base, "_", ciclo)
 
     cat("\n  Ciclo:", ciclo, "— Archivo:", basename(ruta), "\n")
-    datos <- cargar_base(ruta, ciclo)
+    datos <- cargar_base(ruta, ciclo, mapa_cw = mapa_cw)
     if (is.null(datos) || nrow(datos) < 30) {
       cat("  Datos insuficientes (N <30) — omitido.\n"); next
     }
