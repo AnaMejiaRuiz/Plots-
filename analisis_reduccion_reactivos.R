@@ -841,47 +841,33 @@ agregar_hoja_tabla <- function(wb, nombre_hoja, tabla, col_decision = "decision_
 }
 
 # =============================================================================
-# 7. PIPELINE COMPLETO POR COMBINACIÓN CUESTIONARIO × FIGURA × MOMENTO
+# 7. PIPELINE POR COMBINACIÓN — devuelve resultados, sin guardar Excel propio
 # =============================================================================
 
-#' Ejecuta el análisis completo para una combinación y guarda el Excel.
-#'
-#' @param cuestion   "HD", "HSXXI", "HI", o "CTXT"
-#' @param figura     "DIR", "DOC", "EST", o "PMF"
-#' @param momento    "pre" o "post"
-#' @param catalogo   data.frame devuelto por catalogo_archivos()
-#' @param max_item   Máximo teórico de la escala (0 = inicio). NULL → derivar de datos.
-#'                   Usar CONFIG$max_escala[[cuestion]] como valor por defecto.
+#' Ejecuta TCT+IRT+EFA+EGA para una combinación cuestionario × figura × momento.
+#' Devuelve lista nombrada por ciclo; cada elemento es el data.frame de analizar_items
+#' con columna extra `momento`.
 
 ejecutar_combinacion <- function(cuestion, figura, momento = "pre",
                                  catalogo, max_item = NULL) {
 
-  # Resolver max_item desde CONFIG si no se especifica
-  if (is.null(max_item) && cuestion %in% names(CONFIG$max_escala)) {
+  if (is.null(max_item) && cuestion %in% names(CONFIG$max_escala))
     max_item <- CONFIG$max_escala[[cuestion]]
-    cat(sprintf("  [INFO] max_item para %s desde CONFIG: %g\n", cuestion, max_item))
-  }
 
   etiq_base <- paste0(cuestion, "_", figura, "_", momento)
   cat("\n", strrep("=", 70), "\n")
   cat("PROCESANDO:", etiq_base, "\n")
   cat(strrep("=", 70), "\n")
 
-  # Cargar crosswalk para alinear códigos entre ciclos
-  # La hoja del crosswalk usa formato CUESTIONARIO_FIGURA (ej. "CTXT_DIR")
-  # HSXXI en las bases corresponde a SXXI en el diccionario
   hoja_cw <- paste0(gsub("HSXXI", "SXXI", cuestion), "_", figura)
   mapa_cw <- cargar_crosswalk(hoja_cw)
   if (!is.null(mapa_cw)) {
-    n_match <- nrow(mapa_cw$exacto)
-    cat(sprintf("  [CROSSWALK] Hoja '%s': %d EXACTO | %d NUEVO | %d SIN_MATCH\n",
+    cat(sprintf("  [CROSSWALK] '%s': %d EXACTO | %d NUEVO | %d SIN_MATCH\n",
                 hoja_cw, nrow(mapa_cw$exacto), nrow(mapa_cw$nuevo), nrow(mapa_cw$sin_match)))
   } else {
-    cat(sprintf("  [CROSSWALK] Sin mapa para '%s' — comparación usará códigos originales\n",
-                hoja_cw))
+    cat(sprintf("  [CROSSWALK] Sin mapa para '%s'\n", hoja_cw))
   }
 
-  # Buscar archivos en catálogo
   reg <- catalogo %>%
     dplyr::filter(cuestion == !!cuestion,
                   figura   == !!figura,
@@ -911,117 +897,197 @@ ejecutar_combinacion <- function(cuestion, figura, momento = "pre",
       cat("  Sin ítems analizables (todos continuos o excluidos) — omitido.\n")
       next
     }
-    res$ciclo <- ciclo
-    resultados_ciclo[[ciclo]] <- res
+    res$ciclo   <- ciclo
+    res$momento <- momento
+    # Clave única para columnas en formato ancho: "2425pre", "2526pre", etc.
+    res$clave_cm <- paste0(ciclo, momento)
+    resultados_ciclo[[paste0(ciclo, "_", momento)]] <- res
   }
-
-  if (length(resultados_ciclo) == 0) return(invisible(NULL))
-
-  # Crear workbook para esta combinación
-  wb <- openxlsx::createWorkbook()
-
-  for (ciclo in names(resultados_ciclo)) {
-    agregar_hoja_tabla(wb,
-                       nombre_hoja   = paste0(ciclo, "_items"),
-                       tabla         = resultados_ciclo[[ciclo]],
-                       col_decision  = "decision_final")
-  }
-
-  # Hoja comparativa si hay ambos ciclos
-  if (all(c("2425", "2526") %in% names(resultados_ciclo))) {
-    comp <- comparar_ciclos(resultados_ciclo[["2425"]],
-                            resultados_ciclo[["2526"]])
-    agregar_hoja_tabla(wb,
-                       nombre_hoja  = "Comparacion_ciclos",
-                       tabla        = comp,
-                       col_decision = "decision_recomendada")
-  }
-
-  # Hoja resumen ejecutivo
-  resumen_filas <- lapply(names(resultados_ciclo), function(ciclo) {
-    t <- resultados_ciclo[[ciclo]]
-    data.frame(
-      ciclo          = ciclo,
-      cuestionario   = cuestion,
-      figura         = figura,
-      momento        = momento,
-      total_items    = nrow(t),
-      datos_insuf    = sum(t$flag_NA == "DATOS_INSUFICIENTES", na.rm = TRUE),
-      a_eliminar     = sum(t$decision_final == "ELIMINAR", na.rm = TRUE),
-      a_conservar    = sum(t$decision_final == "Conservar", na.rm = TRUE),
-      pct_reduccion  = round(
-        sum(t$decision_final == "ELIMINAR", na.rm = TRUE) / nrow(t) * 100, 1
-      ),
-      ritc_promedio  = round(mean(t$ritc, na.rm = TRUE), 3),
-      stringsAsFactors = FALSE
-    )
-  })
-  resumen_ejec <- dplyr::bind_rows(resumen_filas)
-  agregar_hoja_tabla(wb, "Resumen_ejecutivo", resumen_ejec)
-
-  # Guardar Excel
-  dir.create(CONFIG$dir_salida, showWarnings = FALSE, recursive = TRUE)
-  archivo_out <- file.path(CONFIG$dir_salida, paste0(etiq_base, ".xlsx"))
-  openxlsx::saveWorkbook(wb, archivo_out, overwrite = TRUE)
-  cat("\n  Excel guardado:", archivo_out, "\n")
 
   invisible(resultados_ciclo)
 }
 
 # =============================================================================
-# 8. CONSOLIDACIÓN GLOBAL
+# 8. CONSTRUCCIÓN DE TABLA ANCHA Y GENERACIÓN DE EXCEL POR CUESTIONARIO
 # =============================================================================
 
-#' Reúne todos los archivos _items de resultados y produce un Excel maestro.
+# Indicadores que se replican por cada ciclo+momento
+INDICADORES_CM <- c("pct_NA", "media", "p_dificultad", "ritc",
+                     "alpha_sin_item", "b_Rasch", "infit_MNSQ", "outfit_MNSQ",
+                     "a_GRM", "comunalidad_EFA", "estabilidad_EGA",
+                     "decision_final")
 
-consolidar_global <- function(dir_salida = CONFIG$dir_salida) {
-  archivos_xlsx <- list.files(dir_salida, pattern = "\\.xlsx$",
-                              full.names = TRUE, recursive = FALSE)
-  # Excluir el maestro si ya existe
-  archivos_xlsx <- archivos_xlsx[!grepl("MAESTRO", archivos_xlsx)]
+#' Construye una fila de justificación a partir de los indicadores por ciclo.
+generar_justificacion <- function(fila, claves_cm) {
+  razones <- c()
+  for (cm in claves_cm) {
+    dec_col <- paste0(cm, "_decision_final")
+    if (!dec_col %in% names(fila)) next
+    dec <- fila[[dec_col]]
+    if (is.na(dec) || dec != "ELIMINAR") next
 
-  if (length(archivos_xlsx) == 0) {
-    cat("Sin archivos para consolidar.\n"); return(invisible(NULL))
+    # Detectar qué criterios fallaron
+    problemas <- c()
+    pna   <- fila[[paste0(cm, "_pct_NA")]];       if (!is.na(pna)  && pna  > CONFIG$umbral_NA_pct)    problemas <- c(problemas, sprintf("NA=%.0f%%", pna))
+    ritc  <- fila[[paste0(cm, "_ritc")]];          if (!is.na(ritc) && ritc < CONFIG$umbral_ritc)       problemas <- c(problemas, sprintf("ritc=%.2f", ritc))
+    inf   <- fila[[paste0(cm, "_infit_MNSQ")]];   if (!is.na(inf)  && inf  > CONFIG$umbral_infit)      problemas <- c(problemas, sprintf("infit=%.2f", inf))
+    out   <- fila[[paste0(cm, "_outfit_MNSQ")]];  if (!is.na(out)  && out  > CONFIG$umbral_outfit)     problemas <- c(problemas, sprintf("outfit=%.2f", out))
+    agrm  <- fila[[paste0(cm, "_a_GRM")]];        if (!is.na(agrm) && agrm < CONFIG$umbral_a_grm)      problemas <- c(problemas, sprintf("a_GRM=%.2f", agrm))
+    com   <- fila[[paste0(cm, "_comunalidad_EFA")]]; if (!is.na(com) && com < CONFIG$umbral_comunalidad) problemas <- c(problemas, sprintf("h2=%.2f", com))
+    est   <- fila[[paste0(cm, "_estabilidad_EGA")]]; if (!is.na(est) && est < CONFIG$umbral_estabilidad) problemas <- c(problemas, sprintf("estab=%.2f", est))
+
+    if (length(problemas) > 0)
+      razones <- c(razones, paste0("[", cm, ": ", paste(problemas, collapse=", "), "]"))
+  }
+  if (length(razones) == 0) return("Conservar en todos los ciclos disponibles")
+  paste(razones, collapse = " ")
+}
+
+#' Pivota lista de resultados por ciclo+momento a formato ancho (1 fila por ítem).
+construir_tabla_ancha <- function(resultados_lista) {
+  if (length(resultados_lista) == 0) return(NULL)
+
+  # Universo de ítems: unión de todos los Item de todos los ciclos+momentos
+  todos_items <- unique(unlist(lapply(resultados_lista, function(r) r$Item)))
+  if (length(todos_items) == 0) return(NULL)
+
+  # Columnas identificadoras (se toman del primer resultado disponible)
+  primer <- resultados_lista[[which(sapply(resultados_lista, nrow) > 0)[1]]]
+  cols_id <- intersect(c("Item", "tipo_item"), names(primer))
+
+  tabla_base <- data.frame(Item = todos_items, stringsAsFactors = FALSE)
+
+  # Añadir tipo_item (EXACTO/NUEVO/SIN_MATCH) desde cualquier ciclo que lo tenga
+  tipo_map <- do.call(rbind, lapply(resultados_lista, function(r) {
+    if ("tipo_item" %in% names(r)) r[, c("Item", "tipo_item")] else NULL
+  }))
+  if (!is.null(tipo_map)) {
+    tipo_map <- tipo_map[!duplicated(tipo_map$Item), ]
+    tabla_base <- dplyr::left_join(tabla_base, tipo_map, by = "Item")
   }
 
-  todos <- purrr::map_dfr(archivos_xlsx, function(f) {
-    hojas <- openxlsx::getSheetNames(f)
-    hojas_comp <- hojas[grepl("_items|Comparacion", hojas)]
-    purrr::map_dfr(hojas_comp, function(h) {
-      df <- tryCatch(
-        openxlsx::read.xlsx(f, sheet = h, na.strings = c("NA", "")),
-        error = function(e) NULL
-      )
-      if (!is.null(df)) {
-        df$Fuente <- basename(f)
-        df$Hoja   <- h
-      }
-      df
-    })
+  claves_cm <- names(resultados_lista)  # e.g. "2425_pre", "2425_post", "2526_pre"
+
+  # Añadir bloque de columnas por cada ciclo+momento
+  for (clave in claves_cm) {
+    res <- resultados_lista[[clave]]
+    # Etiqueta compacta: "2425pre", "2526pre"
+    cm_label <- gsub("_", "", clave)  # "2425_pre" → "2425pre"
+
+    cols_usar <- intersect(INDICADORES_CM, names(res))
+    bloque    <- res[, c("Item", cols_usar), drop = FALSE]
+    names(bloque)[-1] <- paste0(cm_label, "_", names(bloque)[-1])
+
+    tabla_base <- dplyr::left_join(tabla_base, bloque, by = "Item")
+  }
+
+  # Decisión final transversal: ELIMINAR si la mayoría de ciclos con datos dice ELIMINAR
+  dec_cols <- paste0(gsub("_", "", claves_cm), "_decision_final")
+  dec_cols  <- intersect(dec_cols, names(tabla_base))
+
+  tabla_base$ciclos_con_datos <- rowSums(!is.na(
+    tabla_base[, dec_cols, drop = FALSE]))
+
+  tabla_base$ciclos_eliminar  <- rowSums(
+    sapply(dec_cols, function(d) {
+      v <- tabla_base[[d]]
+      ifelse(!is.na(v) & v == "ELIMINAR", 1L, 0L)
+    }), na.rm = TRUE)
+
+  tabla_base$Decision <- dplyr::case_when(
+    tabla_base$ciclos_con_datos == 0                                      ~ "Sin datos",
+    tabla_base$ciclos_eliminar  >  tabla_base$ciclos_con_datos / 2        ~ "ELIMINAR",
+    tabla_base$ciclos_eliminar  == tabla_base$ciclos_con_datos & tabla_base$ciclos_con_datos > 0 ~ "ELIMINAR",
+    TRUE                                                                   ~ "Conservar"
+  )
+
+  # Justificación
+  tabla_base$Justificacion <- apply(tabla_base, 1, function(r) {
+    generar_justificacion(as.list(r), gsub("_", "", claves_cm))
   })
 
-  resumen_global <- todos %>%
-    dplyr::filter(!is.na(decision_final)) %>%
-    dplyr::group_by(Fuente, Hoja, ciclo) %>%
-    dplyr::summarise(
-      Total           = dplyr::n(),
-      Eliminar        = sum(decision_final == "ELIMINAR", na.rm = TRUE),
-      Conservar       = sum(decision_final == "Conservar", na.rm = TRUE),
-      Datos_insuf     = sum(flag_NA == "DATOS_INSUFICIENTES", na.rm = TRUE),
-      Pct_reduccion   = round(Eliminar / Total * 100, 1),
-      ritc_promedio   = round(mean(ritc, na.rm = TRUE), 3),
-      .groups = "drop"
+  # Quitar columnas auxiliares de conteo
+  tabla_base$ciclos_con_datos <- NULL
+  tabla_base$ciclos_eliminar  <- NULL
+
+  tabla_base
+}
+
+#' Genera un Excel por cuestionario: una pestaña por figura educativa.
+consolidar_cuestionario <- function(cuestion, catalogo) {
+
+  cat("\n", strrep("#", 70), "\n")
+  cat("CONSOLIDANDO CUESTIONARIO:", cuestion, "\n")
+  cat(strrep("#", 70), "\n")
+
+  figuras    <- CONFIG$figuras
+  momentos   <- unique(catalogo$momento[catalogo$cuestion == cuestion])
+  max_item   <- CONFIG$max_escala[[cuestion]]
+
+  wb <- openxlsx::createWorkbook()
+  resumen_filas <- list()
+
+  for (figura in figuras) {
+    cat("\n  Figura:", figura, "\n")
+
+    # Recopilar resultados de todos los momentos disponibles
+    resultados_figura <- list()
+
+    for (momento in momentos) {
+      res_cm <- ejecutar_combinacion(cuestion, figura, momento,
+                                     catalogo, max_item = max_item)
+      if (!is.null(res_cm) && length(res_cm) > 0)
+        resultados_figura <- c(resultados_figura, res_cm)
+    }
+
+    if (length(resultados_figura) == 0) {
+      cat("  Sin resultados para figura", figura, "— pestaña omitida.\n")
+      next
+    }
+
+    # Tabla ancha: ítems × (indicadores por ciclo+momento)
+    tabla_ancha <- construir_tabla_ancha(resultados_figura)
+    if (is.null(tabla_ancha) || nrow(tabla_ancha) == 0) next
+
+    # Escribir pestaña
+    agregar_hoja_tabla(wb,
+                       nombre_hoja  = figura,
+                       tabla        = tabla_ancha,
+                       col_decision = "Decision")
+
+    # Acumular para pestaña resumen
+    n_total   <- nrow(tabla_ancha)
+    n_elim    <- sum(tabla_ancha$Decision == "ELIMINAR",  na.rm = TRUE)
+    n_cons    <- sum(tabla_ancha$Decision == "Conservar", na.rm = TRUE)
+    resumen_filas[[figura]] <- data.frame(
+      cuestionario    = cuestion,
+      figura          = figura,
+      total_items     = n_total,
+      a_eliminar      = n_elim,
+      a_conservar     = n_cons,
+      pct_reduccion   = round(n_elim / n_total * 100, 1),
+      stringsAsFactors = FALSE
     )
+    cat(sprintf("  [OK] %s: %d ítems | %d Eliminar | %d Conservar\n",
+                figura, n_total, n_elim, n_cons))
+  }
 
-  wb_maestro <- openxlsx::createWorkbook()
-  agregar_hoja_tabla(wb_maestro, "Todos_los_items", todos)
-  agregar_hoja_tabla(wb_maestro, "Resumen_global", resumen_global)
+  if (length(resumen_filas) == 0) {
+    cat("  Sin datos para ninguna figura. Excel no generado.\n")
+    return(invisible(NULL))
+  }
 
-  ruta_maestro <- file.path(dir_salida, "MAESTRO_reduccion_reactivos.xlsx")
-  openxlsx::saveWorkbook(wb_maestro, ruta_maestro, overwrite = TRUE)
-  cat("Excel maestro guardado:", ruta_maestro, "\n")
+  # Pestaña de resumen ejecutivo
+  resumen_ejec <- dplyr::bind_rows(resumen_filas)
+  agregar_hoja_tabla(wb, "Resumen_ejecutivo", resumen_ejec)
 
-  invisible(list(items = todos, resumen = resumen_global))
+  # Guardar
+  dir.create(CONFIG$dir_salida, showWarnings = FALSE, recursive = TRUE)
+  archivo_out <- file.path(CONFIG$dir_salida, paste0(cuestion, "_reduccion.xlsx"))
+  openxlsx::saveWorkbook(wb, archivo_out, overwrite = TRUE)
+  cat("\n  Excel guardado:", archivo_out, "\n")
+
+  invisible(wb)
 }
 
 # =============================================================================
@@ -1033,33 +1099,23 @@ catalogo <- catalogo_archivos()
 cat(sprintf("Archivos encontrados: %d\n", nrow(catalogo)))
 if (nrow(catalogo) > 0) print(catalogo[, c("ciclo","cuestion","figura","momento")])
 
-# --- Ejecutar todas las combinaciones encontradas en el catálogo ---
-# max_item se resuelve automáticamente desde CONFIG$max_escala por cuestionario.
-# Si un cuestionario mezcla tipos de escala (ej. CTXT con binarias y Likert),
-# ejecuta por separado especificando max_item manualmente.
+# --- Ejecutar todos los cuestionarios encontrados ---
+# Un archivo Excel por cuestionario; una pestaña por figura educativa.
+# Columnas: indicadores por ciclo+momento (2425pre, 2425post, 2526pre)
+#           + Decision final + Justificacion
 #
 # Descomenta para correr todo de una vez:
 #
-# combinaciones <- catalogo %>%
-#   dplyr::distinct(cuestion, figura, momento)
-#
-# for (i in seq_len(nrow(combinaciones))) {
-#   ejecutar_combinacion(
-#     cuestion  = combinaciones$cuestion[i],
-#     figura    = combinaciones$figura[i],
-#     momento   = combinaciones$momento[i],
-#     catalogo  = catalogo
-#     # max_item = NULL  → se toma de CONFIG$max_escala automáticamente
-#   )
+# cuestionarios_disponibles <- unique(catalogo$cuestion)
+# for (cq in cuestionarios_disponibles) {
+#   consolidar_cuestionario(cq, catalogo)
 # }
-# consolidar_global()
 
-# --- O ejecutar una combinación específica con max_item explícito ---
-# ejecutar_combinacion("HSXXI", "EST", "pre",  catalogo)           # max=4 (0-4)
-# ejecutar_combinacion("HD",    "DOC", "pre",  catalogo)           # max=3 (0-3)
-# ejecutar_combinacion("HI",    "DOC", "pre",  catalogo)           # max=4 (0-4)
-# ejecutar_combinacion("CTXT",  "PMF", "pre",  catalogo)           # max=3 (0-3)
-# ejecutar_combinacion("HD",    "EST", "pre",  catalogo, max_item = 4)  # si HD usa hd_frecuencia (0-4)
+# --- O ejecutar un cuestionario específico ---
+# consolidar_cuestionario("CTXT",  catalogo)
+# consolidar_cuestionario("HD",    catalogo)
+# consolidar_cuestionario("HSXXI", catalogo)
+# consolidar_cuestionario("HI",    catalogo)
 
 cat("\nPróximos pasos:\n")
 cat("  1. Verifica que catalogo tenga todos tus archivos (impreso arriba).\n")
