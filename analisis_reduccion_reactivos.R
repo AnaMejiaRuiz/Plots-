@@ -460,7 +460,7 @@ analizar_items <- function(datos, etiqueta, max_item = NULL) {
   # -------------------------------------------------------------------------
   cat("  TCT...\n")
   alpha_obj <- tryCatch(
-    psych::alpha(datos_limpios, check.keys = FALSE),
+    suppressWarnings(psych::alpha(datos_limpios, check.keys = FALSE)),
     error = function(e) { warning("TCT error: ", e$message); NULL }
   )
 
@@ -614,7 +614,7 @@ analizar_items <- function(datos, etiqueta, max_item = NULL) {
   cat("  EGA...\n")
   tryCatch({
     ega_r <- EGAnet::EGA(datos_limpios, model = "glasso",
-                         plot.EGA = FALSE, verbose = FALSE)
+                         plot.EGA = FALSE, verbose = FALSE, seed = 123)
 
     # Guardar red EGA
     tryCatch({
@@ -630,7 +630,7 @@ analizar_items <- function(datos, etiqueta, max_item = NULL) {
     boot_ega <- tryCatch(
       EGAnet::bootEGA(datos_limpios, model = "glasso",
                       iter = 100, plot.typicalStructure = FALSE,
-                      verbose = FALSE),
+                      verbose = FALSE, seed = 123),
       error = function(e) NULL
     )
     estab <- if (!is.null(boot_ega)) {
@@ -731,7 +731,7 @@ analizar_items <- function(datos, etiqueta, max_item = NULL) {
                                   tabla$Item %in% names(datos_limpios)]
   if (length(items_conservar) >= 3) {
     alpha_red <- tryCatch(
-      psych::alpha(datos_limpios[, items_conservar], check.keys = FALSE)$total$raw_alpha,
+      suppressWarnings(psych::alpha(datos_limpios[, items_conservar], check.keys = FALSE))$total$raw_alpha,
       error = function(e) NA_real_
     )
     cat(sprintf("  Alpha escala reducida (%d ítems): %.3f\n",
@@ -957,12 +957,8 @@ ejecutar_combinacion <- function(cuestion, figura, momento = "pre",
 
   hoja_cw <- paste0(gsub("HSXXI", "SXXI", cuestion), "_", figura)
   mapa_cw <- cargar_crosswalk(hoja_cw)
-  if (!is.null(mapa_cw)) {
-    cat(sprintf("  [CROSSWALK] '%s': %d EXACTO | %d NUEVO | %d SIN_MATCH\n",
-                hoja_cw, nrow(mapa_cw$exacto), nrow(mapa_cw$nuevo), nrow(mapa_cw$sin_match)))
-  } else {
+  if (is.null(mapa_cw))
     cat(sprintf("  [CROSSWALK] Sin mapa para '%s'\n", hoja_cw))
-  }
 
   reg <- catalogo %>%
     dplyr::filter(cuestion == !!cuestion,
@@ -1022,17 +1018,24 @@ generar_justificacion <- function(fila, claves_cm) {
     dec <- fila[[dec_col]]
     if (is.na(dec) || dec != "ELIMINAR") next
 
-    # Detectar qué criterios fallaron
-    # apply() convierte todo a character; forzar numérico antes de comparar
-    n <- function(x) suppressWarnings(as.numeric(x))
+    # Detectar qué criterios fallaron.
+    # num1(): convierte a numérico escalar, devuelve NA si NULL/vacío/no-numérico.
+    # Esto evita errores en if() cuando la columna no existe o apply() devuelve character.
+    num1 <- function(x) {
+      v <- suppressWarnings(as.numeric(x))
+      if (length(v) == 0L) NA_real_ else v[[1L]]
+    }
+    gt <- function(val, thr) { v <- num1(val); !is.na(v) && v > thr }
+    lt <- function(val, thr) { v <- num1(val); !is.na(v) && v < thr }
+
     problemas <- c()
-    pna   <- n(fila[[paste0(cm, "_pct_NA")]]);          if (!is.na(pna)  && pna  > CONFIG$umbral_NA_pct)     problemas <- c(problemas, sprintf("NA=%.0f%%",  pna))
-    ritc  <- n(fila[[paste0(cm, "_ritc")]]);             if (!is.na(ritc) && ritc < CONFIG$umbral_ritc)        problemas <- c(problemas, sprintf("ritc=%.2f",  ritc))
-    inf   <- n(fila[[paste0(cm, "_infit_MNSQ")]]);      if (!is.na(inf)  && inf  > CONFIG$umbral_infit)       problemas <- c(problemas, sprintf("infit=%.2f", inf))
-    out   <- n(fila[[paste0(cm, "_outfit_MNSQ")]]);     if (!is.na(out)  && out  > CONFIG$umbral_outfit)      problemas <- c(problemas, sprintf("outfit=%.2f",out))
-    agrm  <- n(fila[[paste0(cm, "_a_GRM")]]);           if (!is.na(agrm) && agrm < CONFIG$umbral_a_grm)       problemas <- c(problemas, sprintf("a_GRM=%.2f", agrm))
-    com   <- n(fila[[paste0(cm, "_comunalidad_EFA")]]); if (!is.na(com)  && com  < CONFIG$umbral_comunalidad) problemas <- c(problemas, sprintf("h2=%.2f",    com))
-    est   <- n(fila[[paste0(cm, "_estabilidad_EGA")]]); if (!is.na(est)  && est  < CONFIG$umbral_estabilidad) problemas <- c(problemas, sprintf("estab=%.2f", est))
+    if (gt(fila[[paste0(cm, "_pct_NA")]],          CONFIG$umbral_NA_pct))     problemas <- c(problemas, sprintf("NA=%.0f%%",  num1(fila[[paste0(cm, "_pct_NA")]])))
+    if (lt(fila[[paste0(cm, "_ritc")]],             CONFIG$umbral_ritc))       problemas <- c(problemas, sprintf("ritc=%.2f",  num1(fila[[paste0(cm, "_ritc")]])))
+    if (gt(fila[[paste0(cm, "_infit_MNSQ")]],       CONFIG$umbral_infit))      problemas <- c(problemas, sprintf("infit=%.2f", num1(fila[[paste0(cm, "_infit_MNSQ")]])))
+    if (gt(fila[[paste0(cm, "_outfit_MNSQ")]],      CONFIG$umbral_outfit))     problemas <- c(problemas, sprintf("outfit=%.2f",num1(fila[[paste0(cm, "_outfit_MNSQ")]])))
+    if (lt(fila[[paste0(cm, "_a_GRM")]],            CONFIG$umbral_a_grm))      problemas <- c(problemas, sprintf("a_GRM=%.2f", num1(fila[[paste0(cm, "_a_GRM")]])))
+    if (lt(fila[[paste0(cm, "_comunalidad_EFA")]], CONFIG$umbral_comunalidad)) problemas <- c(problemas, sprintf("h2=%.2f",    num1(fila[[paste0(cm, "_comunalidad_EFA")]])))
+    if (lt(fila[[paste0(cm, "_estabilidad_EGA")]], CONFIG$umbral_estabilidad)) problemas <- c(problemas, sprintf("estab=%.2f", num1(fila[[paste0(cm, "_estabilidad_EGA")]])))
 
     if (length(problemas) > 0)
       razones <- c(razones, paste0("[", cm, ": ", paste(problemas, collapse=", "), "]"))
