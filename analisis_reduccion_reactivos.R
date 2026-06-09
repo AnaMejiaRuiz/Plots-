@@ -106,12 +106,12 @@ dir.create(CONFIG$dir_salida, showWarnings = FALSE, recursive = TRUE)
 
 `%||%` <- function(a, b) if (!is.null(a)) a else b
 
-# Ruta al crosswalk — ajusta si lo guardas en otra ubicación
-# Por defecto busca en la misma carpeta que los datos
-CROSSWALK_PATH <- file.path(CONFIG$dir_datos, "..", "crosswalk_variables_2425_2526.xlsx")
+# Ruta al crosswalk — EDITA ESTA LÍNEA con la ruta exacta en tu equipo
+CROSSWALK_PATH <- "C:/Users/almejia/Desktop/ANALISIS REACTIVOS/crosswalk_variables_2425_2526.xlsx"
 
-# Si prefieres especificar la ruta directamente, descomenta y edita:
-# CROSSWALK_PATH <- "C:/Users/almejia/Desktop/ANALISIS REACTIVOS/crosswalk_variables_2425_2526.xlsx"
+cat(sprintf("[CONFIG] Crosswalk: %s — %s\n",
+            CROSSWALK_PATH,
+            if (file.exists(CROSSWALK_PATH)) "ENCONTRADO" else "NO ENCONTRADO"))
 
 #' Carga y estructura el crosswalk para una hoja dada.
 #'
@@ -304,9 +304,24 @@ cargar_base <- function(ruta, ciclo, mapa_cw = NULL) {
 #'   2526/  CUESTIONARIO_FIGURA_momento.xlsx
 
 catalogo_archivos <- function() {
+  # Patrón esperado: CUESTIONARIO_FIGURA_momento.xlsx (ej. CTXT_DIR_pre.xlsx)
+  # Cuestionarios válidos: HD, HSXXI, HI, CTXT
+  CUESTIONS_VALIDAS <- paste(CONFIG$cuestionarios, collapse = "|")
+
   leer_dir <- function(dir_ciclo, ciclo_etiq) {
     archivos <- list.files(dir_ciclo, pattern = "\\.xlsx$",
                            full.names = TRUE, ignore.case = TRUE)
+    if (length(archivos) == 0) return(tibble::tibble())
+
+    # Excluir archivos que no sean bases de datos de respuestas:
+    # diccionarios, catálogos, archivos temporales (~$), etc.
+    nombre_base <- tools::file_path_sans_ext(basename(archivos))
+    es_valido <- stringr::str_detect(
+      toupper(nombre_base),
+      paste0("^(", CUESTIONS_VALIDAS, ")_")
+    ) & !stringr::str_starts(nombre_base, "~")
+
+    archivos <- archivos[es_valido]
     if (length(archivos) == 0) return(tibble::tibble())
 
     info <- tibble::tibble(ruta = archivos) %>%
@@ -375,16 +390,35 @@ analizar_items <- function(datos, etiqueta, max_item = NULL) {
     max_obs
   }
 
-  # Ítems cuyo máximo observado es NA (todo NA) o 0 (sin variabilidad)
-  # se marcan como DATOS_INSUFICIENTES en diagnostico_NA; no crashear aquí.
+  # Umbral para detectar variables continuas (edad, días, horas, etc.)
+  # Si el máximo observado supera este valor, el ítem se trata como continuo
+  # y se excluye del pipeline psicométrico (TCT/IRT/EFA requieren escala acotada).
+  MAX_ESCALA_LIKERT <- 10   # cualquier ítem con max > 10 se considera continuo
+
+  continuas <- !is.na(max_por_item) & max_por_item > MAX_ESCALA_LIKERT
+  if (any(continuas)) {
+    cat(sprintf("  [AVISO] %d ítems continuos excluidos del análisis psicométrico (max > %d): %s\n",
+                sum(continuas), MAX_ESCALA_LIKERT,
+                paste(names(max_por_item)[continuas], collapse = ", ")))
+  }
+
+  # Ítems con max NA/0 (todo-NA o sin variabilidad)
   problemas_max <- is.na(max_por_item) | max_por_item <= 0
   if (any(problemas_max)) {
-    cat(sprintf("  [AVISO] %d ítems con max NA o ≤0 (todo-NA o sin variabilidad): %s\n",
+    cat(sprintf("  [AVISO] %d ítems con max NA o ≤0: %s\n",
                 sum(problemas_max),
                 paste(names(max_por_item)[problemas_max], collapse = ", ")))
-    # Asignar max=1 provisional para no bloquear el flujo; serán descartados
-    # en la limpieza por NAs antes de los modelos.
     max_por_item[problemas_max] <- 1
+  }
+
+  # Excluir variables continuas de los datos antes de cualquier análisis
+  items_excluir <- names(max_por_item)[continuas | problemas_max]
+  datos <- datos[, !names(datos) %in% items_excluir, drop = FALSE]
+  max_por_item <- max_por_item[names(datos)]
+
+  if (ncol(datos) == 0) {
+    warning(etiqueta, ": sin ítems tipo escala tras excluir variables continuas.")
+    return(data.frame(Item = character(0)))
   }
 
   # Para mirt: máximo único = el mayor de todos los ítems válidos
@@ -708,10 +742,11 @@ comparar_ciclos <- function(tabla_A, tabla_B, ciclo_A = "2425", ciclo_B = "2526"
   # Unir los tres grupos (bind_rows rellena con NA las columnas faltantes)
   comp_total <- dplyr::bind_rows(comp_exacto, comp_sin_match, comp_nuevo)
 
-  # Reordenar: grupo + Item al frente
-  cols_frente <- c("grupo", "Item", "consistencia", "decision_recomendada")
+  # Reordenar: grupo + Item al frente (solo columnas que existan)
+  cols_frente <- intersect(c("grupo", "Item", "consistencia", "decision_recomendada"),
+                           names(comp_total))
   resto       <- setdiff(names(comp_total), cols_frente)
-  comp_total  <- comp_total[, c(cols_frente, resto)]
+  comp_total  <- comp_total[, c(cols_frente, resto), drop = FALSE]
 
   n_ex <- nrow(comp_exacto)
   n_sm <- nrow(comp_sin_match)
