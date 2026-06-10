@@ -233,66 +233,79 @@ cargar_base <- function(ruta, ciclo, mapa_cw = NULL) {
   cols_q <- stringr::str_detect(names(dat), "^Q\\d+")
   dat_q  <- dat[, cols_q, drop = FALSE]
 
-  # Mapa de recodificación: etiquetas de texto → código numérico (escala 0-4)
-  # Cubre las escalas usadas en HSXXI y otros cuestionarios con respuestas en texto
-  # Mapa global de etiquetas de texto → código numérico.
-  # Cubre todas las escalas Likert usadas en los cuestionarios:
-  #   HD    : 0-3 (uso/frecuencia tecnológica) y 0-4 (acuerdo)
-  #   HSXXI : 0-4 acuerdo y 0-4 frecuencia
-  #   HI    : 0-4 frecuencia/acuerdo
-  #   CTXT  : 0-4 y binaria (Sí/No)
+  # Respuestas que deben tratarse como dato perdido (psicométricamente justificado)
+  VALORES_NA <- c(
+    "No lo sé/Prefiero no contestar",
+    "No lo sé/ Prefiero no contestar",
+    "No lo sé / Prefiero no contestar",
+    "No lo sé", "Prefiero no contestar", "No aplica", "NA"
+  )
+
+  # Mapa completo etiqueta de texto → código numérico para todos los cuestionarios.
+  # HD     : hd_conocimiento (0-3), hd_habilidad (0-3), hd_frecuencia (0-4)
+  # HI     : hi_frecuencia (0-4), hi_acuerdo (0-4)
+  # HSXXI  : hsxxi_acuerdo (0-4), hsxxi_frecuencia (0-4)
+  # CTXT   : ctx_frecuencia (0-3), ctx_receptor (0-4), ctx_acuerdo (0-4), ctx_binaria (0-1)
   MAPA_TEXTO_NUM <- c(
-    # ── Escala acuerdo 5 niveles (0-4) ──────────────────────────────────────
-    "Totalmente en desacuerdo"       = 0,
-    "Algo en desacuerdo"             = 1,
-    "Ni de acuerdo ni en desacuerdo" = 2,
-    "Algo de acuerdo"                = 3,
-    "Totalmente de acuerdo"          = 4,
-    # ── Escala frecuencia 5 niveles (0-4) ───────────────────────────────────
-    "Nunca"                          = 0,
-    "Rara vez"                       = 1,
-    "Algunas veces"                  = 2,
-    "Frecuentemente"                 = 3,
-    "Siempre"                        = 4,
-    # ── Escala frecuencia alternativa 5 niveles (0-4) ───────────────────────
-    "Casi nunca"                     = 1,
-    "A veces"                        = 2,
-    "Casi siempre"                   = 3,
-    # ── Escala uso/dominio HD 4 niveles (0-3) ───────────────────────────────
-    "No lo hago / No sé hacerlo"     = 0,
-    "Lo hago con mucha dificultad"   = 1,
-    "Lo hago con algo de dificultad" = 2,
-    "Lo hago sin dificultad"         = 3,
-    # Variantes frecuentes en HD
-    "Nunca lo hago"                  = 0,
-    "Pocas veces"                    = 1,
-    "Varias veces"                   = 2,
-    "Muchas veces"                   = 3,
-    "No lo hago"                     = 0,
-    "Con dificultad"                 = 1,
-    "Con poca dificultad"            = 2,
-    "Con facilidad"                  = 3,
-    # ── Escala acuerdo 4 niveles (0-3) ──────────────────────────────────────
-    "En desacuerdo"                  = 0,
-    "Parcialmente en desacuerdo"     = 1,
-    "Parcialmente de acuerdo"        = 2,
-    "De acuerdo"                     = 3,
-    # ── Escala binaria (0-1) ─────────────────────────────────────────────────
-    "No"                             = 0,
-    "Sí"                             = 1,
-    "Si"                             = 1
+    # ── HD: conocimiento (0-3) ───────────────────────────────────────────────
+    "No sé / Nunca he oído hablar de esto"                                     = 0,
+    "Conozco un poco el tema"                                                  = 1,
+    "Sí, conozco bien este tema"                                               = 2,
+    "Totalmente, e incluso podría explicárselo a otras personas"               = 3,
+    # ── HD: habilidad (0-3) ─────────────────────────────────────────────────
+    "No sé cómo hacerlo"                                                       = 0,
+    "Puedo hacerlo con ayuda"                                                  = 1,
+    "Puedo hacerlo por mi cuenta"                                              = 2,
+    "Puedo hacerlo con confianza y si es necesario puedo ayudar a otras personas" = 3,
+    # ── HD: frecuencia (0-4) ────────────────────────────────────────────────
+    "Nunca"                                                                    = 0,
+    "Rara vez"                                                                 = 1,
+    "Algunas veces"                                                            = 2,
+    "Frecuentemente"                                                           = 3,
+    "Siempre"                                                                  = 4,
+    # ── HI: frecuencia (0-4) ────────────────────────────────────────────────
+    "Casi nunca"                                                               = 0,
+    "Algunas veces durante el semestre/año"                                    = 1,
+    "1 a 3 veces al mes"                                                       = 2,
+    "1 a 3 veces por semana"                                                   = 3,
+    "Casi todos los días"                                                      = 4,
+    # ── HI: acuerdo (0-4) ───────────────────────────────────────────────────
+    "No estoy de acuerdo"                                                      = 0,
+    "Muy de acuerdo"                                                           = 3,
+    # ── HSXXI: acuerdo (0-4) ────────────────────────────────────────────────
+    "Totalmente en desacuerdo"                                                 = 0,
+    "Algo en desacuerdo"                                                       = 1,
+    "Ni de acuerdo ni en desacuerdo"                                           = 2,
+    "Algo de acuerdo"                                                          = 3,
+    # "Totalmente de acuerdo" ya definido arriba = 4  →  se omite duplicado
+    # NOTA: "De acuerdo" en HI = 2 (posición intermedia de 5);
+    #        en CTXT ctx_acuerdo = misma escala HSXXI, "De acuerdo" no aparece.
+    "De acuerdo"                                                               = 2
+    # ── CTXT: frecuencia (0-3) ──────────────────────────────────────────────
+    # "Nunca"=0 y "Siempre" se codifican igual que HD/HSXXI/HI; el máximo
+    # empírico de los ítems CTXT será 3 (nunca llegan respuestas de nivel 4),
+    # por lo que analizar_items detectará correctamente la escala 0-3.
+    "Pocas veces"                                                              = 1,
+    "Muchas veces"                                                             = 2,
+    # ── CTXT: receptividad (0-4) ────────────────────────────────────────────
+    "Nada receptivos"                                                          = 0,
+    "Poco receptivos"                                                          = 1,
+    "Indiferentes"                                                             = 2,
+    "Medianamente receptivos"                                                  = 3,
+    "Muy receptivos"                                                           = 4,
+    # ── Binaria (0-1) ───────────────────────────────────────────────────────
+    "No"                                                                       = 0,
+    "Sí"                                                                       = 1,
+    "Si"                                                                       = 1
   )
 
   recodificar_col <- function(x) {
-    # Si la columna ya es numérica, devolverla directamente
     if (is.numeric(x)) return(x)
-    # Intentar conversión numérica directa (funciona cuando datos son "0","1",…)
-    num <- suppressWarnings(as.numeric(as.character(x)))
-    # Para columnas character o factor, aplicar siempre el mapa de texto
-    # (si ya eran números como texto, num tiene el valor correcto y el mapa
-    # devuelve NA para ellos, por lo que ifelse retorna num igualmente)
+    x_str <- trimws(as.character(x))
+    # Convertir VALORES_NA a NA antes de cualquier otra cosa
+    x_str[x_str %in% VALORES_NA] <- NA_character_
+    num <- suppressWarnings(as.numeric(x_str))
     if (is.character(x) || is.factor(x)) {
-      x_str  <- trimws(as.character(x))
       mapeado <- MAPA_TEXTO_NUM[x_str]
       return(as.numeric(ifelse(!is.na(mapeado), mapeado, num)))
     }
