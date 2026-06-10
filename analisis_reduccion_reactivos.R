@@ -44,6 +44,15 @@ CONFIG <- list(
   figuras      = c("DIR", "DOC", "EST", "PMF"),
   cuestionarios = c("HD", "HSXXI", "HI", "CTXT"),
 
+  # Combinaciones cuestionario × figura que realmente existen
+  # CTXT: todas las figuras | HD y HSXXI: DOC y EST | HI: solo DOC
+  figuras_por_cuestion = list(
+    CTXT  = c("DIR", "DOC", "EST", "PMF"),
+    HD    = c("DOC", "EST"),
+    HSXXI = c("DOC", "EST"),
+    HI    = c("DOC")
+  ),
+
   # --- Máximo teórico por cuestionario (escala inicia en 0) ---
   # Se usa cuando TODOS los ítems del cuestionario comparten el mismo máximo.
   # Si el cuestionario mezcla escalas (como HD con 0-3 y 0-4), usar NULL
@@ -237,25 +246,19 @@ cargar_base <- function(ruta, ciclo, mapa_cw = NULL) {
     return(dat_q)
   }
 
-  if (ciclo == "2425") {
-    # EXACTO: renombrar code_2425 → canon (code_2526)
-    cols_exacto    <- mapa_cw$exacto$code_2425
-    nombres_canon  <- mapa_cw$exacto$canon
-    cols_sin_match <- mapa_cw$sin_match$canon
+  # Referencia de nombres: siempre se usa el código 2425.
+  # Para ítems EXACTO del ciclo 2526 se aplica el mapeo inverso code_2526 → code_2425.
+  # Para ítems NUEVO (solo en 2526) se usa el código 2526 con prefijo "[2526]".
 
-    # Partir de TODAS las columnas disponibles
+  if (ciclo == "2425") {
+    cols_exacto    <- mapa_cw$exacto$code_2425   # nombres en los datos
+    cols_sin_match <- mapa_cw$sin_match$canon     # = code_2425 (solo en 2425)
+
     dat_out  <- dat_q
     tipo_vec <- setNames(rep("SIN_CROSSWALK", ncol(dat_out)), names(dat_out))
 
-    # Renombrar EXACTO → nombre canónico y etiquetar
-    idx_ex <- match(cols_exacto, names(dat_out))
-    for (k in seq_along(idx_ex)) {
-      if (!is.na(idx_ex[k])) {
-        names(dat_out)[idx_ex[k]]  <- nombres_canon[k]
-        tipo_vec[nombres_canon[k]] <- "EXACTO"
-      }
-    }
-    # Etiquetar SIN_MATCH (ya tienen nombre canónico = nombre original 2425)
+    # Etiquetar EXACTO (ya tienen nombre 2425 — no se renombran)
+    tipo_vec[names(dat_out) %in% cols_exacto]    <- "EXACTO"
     tipo_vec[names(dat_out) %in% cols_sin_match] <- "SIN_MATCH"
 
     attr(dat_out, "tipo_item") <- tipo_vec
@@ -267,16 +270,34 @@ cargar_base <- function(ruta, ciclo, mapa_cw = NULL) {
                 n_ex, n_sm, n_sc, ncol(dat_out)))
 
   } else {  # ciclo == "2526"
-    # EXACTO: nombre ya es canónico (code_2526)
-    cols_exacto <- mapa_cw$exacto$canon
-    cols_nuevo  <- mapa_cw$nuevo$canon
+    # Mapeo inverso: code_2526 → code_2425 para EXACTO
+    map_inv <- setNames(mapa_cw$exacto$code_2425, mapa_cw$exacto$canon)
+    cols_exacto_2526 <- mapa_cw$exacto$canon   # nombres en los datos 2526
+    cols_nuevo_2526  <- mapa_cw$nuevo$canon    # solo en 2526
 
-    # Partir de TODAS las columnas disponibles
     dat_out  <- dat_q
     tipo_vec <- setNames(rep("SIN_CROSSWALK", ncol(dat_out)), names(dat_out))
 
-    tipo_vec[names(dat_out) %in% cols_exacto] <- "EXACTO"
-    tipo_vec[names(dat_out) %in% cols_nuevo]  <- "NUEVO"
+    # Renombrar EXACTO: code_2526 → code_2425
+    idx_ex <- match(cols_exacto_2526, names(dat_out))
+    for (k in seq_along(idx_ex)) {
+      if (!is.na(idx_ex[k])) {
+        nuevo_nombre <- map_inv[cols_exacto_2526[k]]
+        if (!is.na(nuevo_nombre)) {
+          names(dat_out)[idx_ex[k]]  <- nuevo_nombre
+          tipo_vec[nuevo_nombre]     <- "EXACTO"
+        }
+      }
+    }
+    # NUEVO: prefijo "[2526]" para distinguirlos en la tabla de salida
+    idx_nv <- match(cols_nuevo_2526, names(dat_out))
+    for (k in seq_along(idx_nv)) {
+      if (!is.na(idx_nv[k])) {
+        nuevo_nombre <- paste0("[2526]", names(dat_out)[idx_nv[k]])
+        names(dat_out)[idx_nv[k]] <- nuevo_nombre
+        tipo_vec[nuevo_nombre]    <- "NUEVO"
+      }
+    }
 
     attr(dat_out, "tipo_item") <- tipo_vec
 
@@ -1137,7 +1158,7 @@ consolidar_cuestionario <- function(cuestion, catalogo) {
   cat("CONSOLIDANDO CUESTIONARIO:", cuestion, "\n")
   cat(strrep("#", 70), "\n")
 
-  figuras    <- CONFIG$figuras
+  figuras    <- CONFIG$figuras_por_cuestion[[cuestion]] %||% CONFIG$figuras
   momentos   <- unique(catalogo$momento[catalogo$cuestion == cuestion])
   max_item   <- CONFIG$max_escala[[cuestion]]
 
