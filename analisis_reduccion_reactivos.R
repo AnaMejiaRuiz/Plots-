@@ -1039,6 +1039,10 @@ ejecutar_combinacion <- function(cuestion, figura, momento = "pre",
       cat("  Sin ítems analizables (todos continuos o excluidos) — omitido.\n")
       next
     }
+    cat(sprintf("  [DEBUG] Items analizados (nombres en res$Item): %s\n",
+                paste(res$Item, collapse=", ")))
+    cat(sprintf("  [DEBUG] Crosswalk code_2425 (primeros 10): %s\n",
+                paste(head(cw_df$code_2425, 10), collapse=", ")))
     res$ciclo    <- ciclo
     res$momento  <- momento
     resultados_ciclo[[paste0(ciclo, "_", momento)]] <- res
