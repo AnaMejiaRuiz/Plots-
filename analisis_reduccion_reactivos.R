@@ -124,7 +124,7 @@ cat(sprintf("[CONFIG] Crosswalk: %s — %s\n",
 
 #' Carga y estructura el crosswalk para una hoja dada.
 #'
-#' @param hoja  Ej. "CTXT_DIR", "HD_DOC", "SXXI_EST"
+#' @param hoja  Ej. "CTXT_DIR", "HD_DOC", "HSXXI_EST"
 #' @return list con tres data.frames: $exacto, $nuevo, $sin_match
 #'   $exacto   : code_2425, canon (= code_2526)  — presentes en ambos ciclos
 #'   $nuevo    : canon (= code_2526)              — solo en 2526
@@ -1186,7 +1186,7 @@ consolidar_cuestionario <- function(cuestion, catalogo) {
     cat("\n  Figura:", figura, "\n")
 
     # Cargar crosswalk completo para esta figura (lista maestra de ítems)
-    hoja_cw <- paste0(gsub("HSXXI", "SXXI", cuestion), "_", figura)
+    hoja_cw <- paste0(cuestion, "_", figura)
     cw_df   <- cargar_crosswalk_completo(hoja_cw)
     if (is.null(cw_df) || nrow(cw_df) == 0) {
       cat("  Sin entradas en crosswalk para", hoja_cw, "— pestaña omitida.\n")
