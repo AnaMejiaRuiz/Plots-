@@ -1010,8 +1010,20 @@ ejecutar_combinacion <- function(cuestion, figura, momento = "pre",
     # Seleccionar solo columnas que están en el crosswalk para este ciclo
     if (ciclo == "2425") {
       cols_sel <- intersect(codes_2425, names(datos_brutos))
+      cat(sprintf("  [DEBUG] Crosswalk codes_2425 (primeros 10): %s\n",
+                  paste(head(codes_2425, 10), collapse=", ")))
+      cat(sprintf("  [DEBUG] Columnas en datos (primeras 10): %s\n",
+                  paste(head(names(datos_brutos), 10), collapse=", ")))
+      cat(sprintf("  [DEBUG] Coincidencias: %d de %d códigos\n",
+                  length(cols_sel), length(codes_2425)))
     } else {
       cols_sel <- intersect(codes_2526, names(datos_brutos))
+      cat(sprintf("  [DEBUG] Crosswalk codes_2526 (primeros 10): %s\n",
+                  paste(head(codes_2526, 10), collapse=", ")))
+      cat(sprintf("  [DEBUG] Columnas en datos (primeras 10): %s\n",
+                  paste(head(names(datos_brutos), 10), collapse=", ")))
+      cat(sprintf("  [DEBUG] Coincidencias: %d de %d códigos\n",
+                  length(cols_sel), length(codes_2526)))
     }
 
     if (length(cols_sel) == 0) {
