@@ -229,11 +229,55 @@ cargar_base <- function(ruta, ciclo, mapa_cw = NULL) {
     names(dat) <- ifelse(is.na(extraido), paste0("VAR_", seq_along(extraido)), extraido)
   }
 
-  # Seleccionar columnas Q y forzar numérico
+  # Seleccionar columnas Q y recodificar etiquetas de texto a numérico
   cols_q <- stringr::str_detect(names(dat), "^Q\\d+")
   dat_q  <- dat[, cols_q, drop = FALSE]
-  dat_q  <- as.data.frame(lapply(dat_q,
-               function(x) suppressWarnings(as.numeric(as.character(x)))))
+
+  # Mapa de recodificación: etiquetas de texto → código numérico (escala 0-4)
+  # Cubre las escalas usadas en HSXXI y otros cuestionarios con respuestas en texto
+  MAPA_TEXTO_NUM <- c(
+    # Escala acuerdo (0-4)
+    "Totalmente en desacuerdo"       = 0,
+    "Algo en desacuerdo"             = 1,
+    "Ni de acuerdo ni en desacuerdo" = 2,
+    "Algo de acuerdo"                = 3,
+    "Totalmente de acuerdo"          = 4,
+    # Escala frecuencia (0-4)
+    "Nunca"                          = 0,
+    "Rara vez"                       = 1,
+    "Algunas veces"                  = 2,
+    "Frecuentemente"                 = 3,
+    "Siempre"                        = 4,
+    # Escala frecuencia alternativa (0-4)
+    "Casi nunca"                     = 1,
+    "A veces"                        = 2,
+    "Casi siempre"                   = 3,
+    # Escala acuerdo de 4 niveles (0-3)
+    "En desacuerdo"                  = 0,
+    "Parcialmente en desacuerdo"     = 1,
+    "Parcialmente de acuerdo"        = 2,
+    "De acuerdo"                     = 3,
+    # Escala sí/no (0-1)
+    "No"                             = 0,
+    "Sí"                             = 1,
+    "Si"                             = 1
+  )
+
+  recodificar_col <- function(x) {
+    # Primero intentar conversión numérica directa
+    num <- suppressWarnings(as.numeric(as.character(x)))
+    # Si la mayoría son NA por ser texto, aplicar el mapa
+    if (mean(is.na(num)) > 0.5 && is.character(x) || is.factor(x)) {
+      x_str <- trimws(as.character(x))
+      mapeado <- MAPA_TEXTO_NUM[x_str]
+      # Donde hay mapeo, usar ese valor; donde hay NA en mapa pero número directo, usar número
+      resultado <- ifelse(!is.na(mapeado), mapeado, num)
+      return(as.numeric(resultado))
+    }
+    num
+  }
+
+  dat_q <- as.data.frame(lapply(dat_q, recodificar_col))
 
   # Descartar columnas 100% NA (padres de opción múltiple sin sub-ítems)
   todo_na <- colMeans(is.na(dat_q)) == 1
@@ -1010,20 +1054,8 @@ ejecutar_combinacion <- function(cuestion, figura, momento = "pre",
     # Seleccionar solo columnas que están en el crosswalk para este ciclo
     if (ciclo == "2425") {
       cols_sel <- intersect(codes_2425, names(datos_brutos))
-      cat(sprintf("  [DEBUG] Crosswalk codes_2425 (primeros 10): %s\n",
-                  paste(head(codes_2425, 10), collapse=", ")))
-      cat(sprintf("  [DEBUG] Columnas en datos (primeras 10): %s\n",
-                  paste(head(names(datos_brutos), 10), collapse=", ")))
-      cat(sprintf("  [DEBUG] Coincidencias: %d de %d códigos\n",
-                  length(cols_sel), length(codes_2425)))
     } else {
       cols_sel <- intersect(codes_2526, names(datos_brutos))
-      cat(sprintf("  [DEBUG] Crosswalk codes_2526 (primeros 10): %s\n",
-                  paste(head(codes_2526, 10), collapse=", ")))
-      cat(sprintf("  [DEBUG] Columnas en datos (primeras 10): %s\n",
-                  paste(head(names(datos_brutos), 10), collapse=", ")))
-      cat(sprintf("  [DEBUG] Coincidencias: %d de %d códigos\n",
-                  length(cols_sel), length(codes_2526)))
     }
 
     if (length(cols_sel) == 0) {
@@ -1039,10 +1071,6 @@ ejecutar_combinacion <- function(cuestion, figura, momento = "pre",
       cat("  Sin ítems analizables (todos continuos o excluidos) — omitido.\n")
       next
     }
-    cat(sprintf("  [DEBUG] Items analizados (nombres en res$Item): %s\n",
-                paste(res$Item, collapse=", ")))
-    cat(sprintf("  [DEBUG] Crosswalk code_2425 (primeros 10): %s\n",
-                paste(head(cw_df$code_2425, 10), collapse=", ")))
     res$ciclo    <- ciclo
     res$momento  <- momento
     resultados_ciclo[[paste0(ciclo, "_", momento)]] <- res
