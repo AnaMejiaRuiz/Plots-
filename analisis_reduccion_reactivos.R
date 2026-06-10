@@ -235,44 +235,66 @@ cargar_base <- function(ruta, ciclo, mapa_cw = NULL) {
 
   # Mapa de recodificación: etiquetas de texto → código numérico (escala 0-4)
   # Cubre las escalas usadas en HSXXI y otros cuestionarios con respuestas en texto
+  # Mapa global de etiquetas de texto → código numérico.
+  # Cubre todas las escalas Likert usadas en los cuestionarios:
+  #   HD    : 0-3 (uso/frecuencia tecnológica) y 0-4 (acuerdo)
+  #   HSXXI : 0-4 acuerdo y 0-4 frecuencia
+  #   HI    : 0-4 frecuencia/acuerdo
+  #   CTXT  : 0-4 y binaria (Sí/No)
   MAPA_TEXTO_NUM <- c(
-    # Escala acuerdo (0-4)
+    # ── Escala acuerdo 5 niveles (0-4) ──────────────────────────────────────
     "Totalmente en desacuerdo"       = 0,
     "Algo en desacuerdo"             = 1,
     "Ni de acuerdo ni en desacuerdo" = 2,
     "Algo de acuerdo"                = 3,
     "Totalmente de acuerdo"          = 4,
-    # Escala frecuencia (0-4)
+    # ── Escala frecuencia 5 niveles (0-4) ───────────────────────────────────
     "Nunca"                          = 0,
     "Rara vez"                       = 1,
     "Algunas veces"                  = 2,
     "Frecuentemente"                 = 3,
     "Siempre"                        = 4,
-    # Escala frecuencia alternativa (0-4)
+    # ── Escala frecuencia alternativa 5 niveles (0-4) ───────────────────────
     "Casi nunca"                     = 1,
     "A veces"                        = 2,
     "Casi siempre"                   = 3,
-    # Escala acuerdo de 4 niveles (0-3)
+    # ── Escala uso/dominio HD 4 niveles (0-3) ───────────────────────────────
+    "No lo hago / No sé hacerlo"     = 0,
+    "Lo hago con mucha dificultad"   = 1,
+    "Lo hago con algo de dificultad" = 2,
+    "Lo hago sin dificultad"         = 3,
+    # Variantes frecuentes en HD
+    "Nunca lo hago"                  = 0,
+    "Pocas veces"                    = 1,
+    "Varias veces"                   = 2,
+    "Muchas veces"                   = 3,
+    "No lo hago"                     = 0,
+    "Con dificultad"                 = 1,
+    "Con poca dificultad"            = 2,
+    "Con facilidad"                  = 3,
+    # ── Escala acuerdo 4 niveles (0-3) ──────────────────────────────────────
     "En desacuerdo"                  = 0,
     "Parcialmente en desacuerdo"     = 1,
     "Parcialmente de acuerdo"        = 2,
     "De acuerdo"                     = 3,
-    # Escala sí/no (0-1)
+    # ── Escala binaria (0-1) ─────────────────────────────────────────────────
     "No"                             = 0,
     "Sí"                             = 1,
     "Si"                             = 1
   )
 
   recodificar_col <- function(x) {
-    # Primero intentar conversión numérica directa
+    # Si la columna ya es numérica, devolverla directamente
+    if (is.numeric(x)) return(x)
+    # Intentar conversión numérica directa (funciona cuando datos son "0","1",…)
     num <- suppressWarnings(as.numeric(as.character(x)))
-    # Si la mayoría son NA por ser texto, aplicar el mapa
-    if (mean(is.na(num)) > 0.5 && is.character(x) || is.factor(x)) {
-      x_str <- trimws(as.character(x))
+    # Para columnas character o factor, aplicar siempre el mapa de texto
+    # (si ya eran números como texto, num tiene el valor correcto y el mapa
+    # devuelve NA para ellos, por lo que ifelse retorna num igualmente)
+    if (is.character(x) || is.factor(x)) {
+      x_str  <- trimws(as.character(x))
       mapeado <- MAPA_TEXTO_NUM[x_str]
-      # Donde hay mapeo, usar ese valor; donde hay NA en mapa pero número directo, usar número
-      resultado <- ifelse(!is.na(mapeado), mapeado, num)
-      return(as.numeric(resultado))
+      return(as.numeric(ifelse(!is.na(mapeado), mapeado, num)))
     }
     num
   }
