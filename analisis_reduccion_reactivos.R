@@ -131,68 +131,67 @@ cat(sprintf("[CONFIG] Crosswalk: %s — %s\n",
 #'   $sin_match: canon (= code_2425)              — solo en 2425
 #'   Devuelve NULL si el crosswalk no existe o la hoja no se encuentra.
 
-cargar_crosswalk <- function(hoja) {
-  if (!file.exists(CROSSWALK_PATH)) {
-    warning("Crosswalk no encontrado: ", CROSSWALK_PATH)
-    return(NULL)
-  }
+#' Carga el crosswalk completo para una hoja (con texto y metadatos).
+#' @return data.frame: code_2425, code_2526, texto_2425, texto_2526, tipo_match
+#'   Incluye todas las filas validado=="OK". NULL si no hay datos.
+cargar_crosswalk_completo <- function(hoja) {
+  if (!file.exists(CROSSWALK_PATH)) return(NULL)
   cw <- tryCatch(
     openxlsx::read.xlsx(CROSSWALK_PATH, sheet = "CROSSWALK_COMPLETO",
                         na.strings = c("", "NA")),
-    error = function(e) { warning("Error leyendo crosswalk: ", e$message); NULL }
+    error = function(e) NULL
   )
   if (is.null(cw)) return(NULL)
 
-  # Normalizar nombre de hoja
   cw$hoja <- stringr::str_replace_all(trimws(as.character(cw$hoja)), " ", "_")
   hoja    <- stringr::str_replace_all(trimws(hoja), " ", "_")
 
-  sub_cw <- cw[cw$hoja == hoja & !is.na(cw$hoja), ]
-  if (nrow(sub_cw) == 0) {
-    warning("Hoja '", hoja, "' no encontrada en crosswalk.")
-    return(NULL)
-  }
-
-  # Solo filas con validado == "OK" (excluir ELIMINAR y sin validar)
-  ok <- !is.na(sub_cw$validado) & trimws(sub_cw$validado) == "OK"
+  sub_cw <- cw[!is.na(cw$hoja) & cw$hoja == hoja, ]
+  ok     <- !is.na(sub_cw$validado) & trimws(sub_cw$validado) == "OK"
   sub_cw <- sub_cw[ok, ]
-  if (nrow(sub_cw) == 0) {
-    warning("Ninguna fila con validado='OK' en hoja '", hoja, "'.")
+  if (nrow(sub_cw) == 0) return(NULL)
+
+  sub_cw$tipo_match <- trimws(toupper(as.character(sub_cw$tipo_match)))
+  # Normalizar NUEVO_2526 → NUEVO
+  sub_cw$tipo_match[sub_cw$tipo_match == "NUEVO_2526"] <- "NUEVO"
+
+  data.frame(
+    code_2425  = trimws(as.character(sub_cw$code_2425)),
+    code_2526  = trimws(as.character(sub_cw$code_2526)),
+    texto_2425 = trimws(as.character(
+      if ("texto_2425" %in% names(sub_cw)) sub_cw$texto_2425 else sub_cw$code_2425)),
+    texto_2526 = trimws(as.character(
+      if ("texto_2526" %in% names(sub_cw)) sub_cw$texto_2526 else sub_cw$code_2526)),
+    tipo_match = sub_cw$tipo_match,
+    stringsAsFactors = FALSE
+  )
+}
+
+cargar_crosswalk <- function(hoja) {
+  cw_df <- cargar_crosswalk_completo(hoja)
+  if (is.null(cw_df)) {
+    cat(sprintf("  [CROSSWALK] Sin datos para hoja '%s'\n", hoja))
     return(NULL)
   }
 
-  # Normalizar tipo_match (el usuario puede escribir EXACTO, NUEVO, SIN_MATCH)
-  sub_cw$tipo_match <- trimws(toupper(as.character(sub_cw$tipo_match)))
+  df_exacto <- cw_df[cw_df$tipo_match == "EXACTO" &
+                       !is.na(cw_df$code_2425) & cw_df$code_2425 != "NA" &
+                       !is.na(cw_df$code_2526) & cw_df$code_2526 != "NA", ]
+  df_nuevo  <- cw_df[cw_df$tipo_match == "NUEVO" &
+                       !is.na(cw_df$code_2526) & cw_df$code_2526 != "NA", ]
+  df_sinm   <- cw_df[cw_df$tipo_match == "SIN_MATCH" &
+                       !is.na(cw_df$code_2425) & cw_df$code_2425 != "NA", ]
 
-  # --- Ítems EXACTO: presentes en ambos ciclos ---
-  exacto <- sub_cw[sub_cw$tipo_match == "EXACTO" &
-                     !is.na(sub_cw$code_2425) & !is.na(sub_cw$code_2526), ]
-  df_exacto <- data.frame(
-    code_2425 = trimws(exacto$code_2425),
-    canon     = trimws(exacto$code_2526),   # 2526 = nombre canónico
-    stringsAsFactors = FALSE
+  cat(sprintf("  [CROSSWALK] '%s': %d EXACTO | %d NUEVO | %d SIN_MATCH\n",
+              hoja, nrow(df_exacto), nrow(df_nuevo), nrow(df_sinm)))
+
+  list(
+    exacto    = data.frame(code_2425 = df_exacto$code_2425,
+                           canon     = df_exacto$code_2526,
+                           stringsAsFactors = FALSE),
+    nuevo     = data.frame(canon = df_nuevo$code_2526, stringsAsFactors = FALSE),
+    sin_match = data.frame(canon = df_sinm$code_2425,  stringsAsFactors = FALSE)
   )
-
-  # --- Ítems NUEVO: solo en 2526 ---
-  nuevo <- sub_cw[sub_cw$tipo_match %in% c("NUEVO", "NUEVO_2526") &
-                    !is.na(sub_cw$code_2526), ]
-  df_nuevo <- data.frame(
-    canon = trimws(nuevo$code_2526),
-    stringsAsFactors = FALSE
-  )
-
-  # --- Ítems SIN_MATCH: solo en 2425 ---
-  sin_match <- sub_cw[sub_cw$tipo_match == "SIN_MATCH" &
-                        !is.na(sub_cw$code_2425), ]
-  df_sin_match <- data.frame(
-    canon = trimws(sin_match$code_2425),
-    stringsAsFactors = FALSE
-  )
-
-  cat(sprintf("  [CROSSWALK] '%s': %d EXACTO | %d NUEVO(2526) | %d SIN_MATCH(2425)\n",
-              hoja, nrow(df_exacto), nrow(df_nuevo), nrow(df_sin_match)))
-
-  list(exacto = df_exacto, nuevo = df_nuevo, sin_match = df_sin_match)
 }
 
 # =============================================================================
@@ -210,6 +209,10 @@ cargar_crosswalk <- function(hoja) {
 #' @param mapa_cw Lista devuelta por cargar_crosswalk(), o NULL
 #' @return data.frame con columnas en nombres canónicos y atributo 'tipo_item'
 
+#' Carga datos brutos: extrae Q-columnas con sus nombres naturales (sin renombrar).
+#' Para 2425: extrae código Q del nombre compuesto (PRE_CTXT_DIR_Q10_LAPTOP → Q10_LAPTOP).
+#' Para 2526: columnas ya tienen nombres Q directos.
+#' @return data.frame con columnas nombradas por su código Q (code_2425 ó code_2526)
 cargar_base <- function(ruta, ciclo, mapa_cw = NULL) {
   dat <- tryCatch(
     readxl::read_excel(ruta, na = c("", "NA", "N/A")),
@@ -217,98 +220,31 @@ cargar_base <- function(ruta, ciclo, mapa_cw = NULL) {
   )
   if (is.null(dat)) return(NULL)
 
-  # --- Estandarizar nombres para ciclo 2425 ---
-  # Prefijos observados: PRE_CTXT_DIR_Q1, POS_CTXT_DIR_Q10_LAPTOP, etc.
+  # Extraer código Q de nombres compuestos en 2425
+  # PRE_CTXT_DIR_Q10_LAPTOP  →  Q10_LAPTOP
   if (ciclo == "2425") {
-    extraido <- stringr::str_extract(names(dat), "Q\\d+.*$")
-    extraido <- stringr::str_replace_all(extraido, "[^A-Za-z0-9_]", "_")
+    extraido   <- stringr::str_extract(names(dat), "Q\\d+.*$")
+    extraido   <- stringr::str_replace_all(extraido, "[^A-Za-z0-9_]", "_")
+    extraido   <- stringr::str_remove(extraido, "_+$")   # quitar guiones finales
     names(dat) <- ifelse(is.na(extraido), paste0("VAR_", seq_along(extraido)), extraido)
   }
 
-  # --- Seleccionar columnas Q, forzar numérico ---
+  # Seleccionar columnas Q y forzar numérico
   cols_q <- stringr::str_detect(names(dat), "^Q\\d+")
   dat_q  <- dat[, cols_q, drop = FALSE]
   dat_q  <- as.data.frame(lapply(dat_q,
                function(x) suppressWarnings(as.numeric(as.character(x)))))
 
-  # --- Descartar columnas 100% NA (padres de opción múltiple) ---
+  # Descartar columnas 100% NA (padres de opción múltiple sin sub-ítems)
   todo_na <- colMeans(is.na(dat_q)) == 1
   if (any(todo_na))
-    cat(sprintf("  [INFO] Columnas padre 100%% NA descartadas: %s\n",
+    cat(sprintf("  [INFO] Columnas 100%% NA descartadas: %s\n",
                 paste(names(dat_q)[todo_na], collapse = ", ")))
   dat_q <- dat_q[, !todo_na, drop = FALSE]
   if (ncol(dat_q) == 0) { warning("Sin columnas con datos en: ", ruta); return(NULL) }
 
-  # --- Aplicar crosswalk ---
-  if (is.null(mapa_cw)) {
-    # Sin crosswalk: devolver todas las columnas Q sin filtrar
-    attr(dat_q, "tipo_item") <- setNames(rep("SIN_CROSSWALK", ncol(dat_q)), names(dat_q))
-    return(dat_q)
-  }
-
-  # Referencia de nombres: siempre se usa el código 2425.
-  # Para ítems EXACTO del ciclo 2526 se aplica el mapeo inverso code_2526 → code_2425.
-  # Para ítems NUEVO (solo en 2526) se usa el código 2526 con prefijo "[2526]".
-
-  if (ciclo == "2425") {
-    cols_exacto    <- mapa_cw$exacto$code_2425   # nombres en los datos
-    cols_sin_match <- mapa_cw$sin_match$canon     # = code_2425 (solo en 2425)
-
-    dat_out  <- dat_q
-    tipo_vec <- setNames(rep("SIN_CROSSWALK", ncol(dat_out)), names(dat_out))
-
-    # Etiquetar EXACTO (ya tienen nombre 2425 — no se renombran)
-    tipo_vec[names(dat_out) %in% cols_exacto]    <- "EXACTO"
-    tipo_vec[names(dat_out) %in% cols_sin_match] <- "SIN_MATCH"
-
-    attr(dat_out, "tipo_item") <- tipo_vec
-
-    n_ex <- sum(tipo_vec == "EXACTO")
-    n_sm <- sum(tipo_vec == "SIN_MATCH")
-    n_sc <- sum(tipo_vec == "SIN_CROSSWALK")
-    cat(sprintf("  [2425] %d EXACTO + %d SIN_MATCH + %d SIN_CROSSWALK (%d en datos)\n",
-                n_ex, n_sm, n_sc, ncol(dat_out)))
-
-  } else {  # ciclo == "2526"
-    # Mapeo inverso: code_2526 → code_2425 para EXACTO
-    map_inv <- setNames(mapa_cw$exacto$code_2425, mapa_cw$exacto$canon)
-    cols_exacto_2526 <- mapa_cw$exacto$canon   # nombres en los datos 2526
-    cols_nuevo_2526  <- mapa_cw$nuevo$canon    # solo en 2526
-
-    dat_out  <- dat_q
-    tipo_vec <- setNames(rep("SIN_CROSSWALK", ncol(dat_out)), names(dat_out))
-
-    # Renombrar EXACTO: code_2526 → code_2425
-    idx_ex <- match(cols_exacto_2526, names(dat_out))
-    for (k in seq_along(idx_ex)) {
-      if (!is.na(idx_ex[k])) {
-        nuevo_nombre <- map_inv[cols_exacto_2526[k]]
-        if (!is.na(nuevo_nombre)) {
-          names(dat_out)[idx_ex[k]]  <- nuevo_nombre
-          tipo_vec[nuevo_nombre]     <- "EXACTO"
-        }
-      }
-    }
-    # NUEVO: prefijo "[2526]" para distinguirlos en la tabla de salida
-    idx_nv <- match(cols_nuevo_2526, names(dat_out))
-    for (k in seq_along(idx_nv)) {
-      if (!is.na(idx_nv[k])) {
-        nuevo_nombre <- paste0("[2526]", names(dat_out)[idx_nv[k]])
-        names(dat_out)[idx_nv[k]] <- nuevo_nombre
-        tipo_vec[nuevo_nombre]    <- "NUEVO"
-      }
-    }
-
-    attr(dat_out, "tipo_item") <- tipo_vec
-
-    n_ex <- sum(tipo_vec == "EXACTO")
-    n_nv <- sum(tipo_vec == "NUEVO")
-    n_sc <- sum(tipo_vec == "SIN_CROSSWALK")
-    cat(sprintf("  [2526] %d EXACTO + %d NUEVO + %d SIN_CROSSWALK (%d en datos)\n",
-                n_ex, n_nv, n_sc, ncol(dat_out)))
-  }
-
-  dat_out
+  cat(sprintf("  [%s] %d columnas Q disponibles en datos\n", ciclo, ncol(dat_q)))
+  dat_q
 }
 
 #' Construye el catálogo de archivos disponibles para los dos ciclos.
@@ -982,7 +918,7 @@ agregar_hoja_tabla <- function(wb, nombre_hoja, tabla, col_decision = "decision_
 #' con columna extra `momento`.
 
 ejecutar_combinacion <- function(cuestion, figura, momento = "pre",
-                                 catalogo, max_item = NULL) {
+                                 catalogo, cw_df, max_item = NULL) {
 
   if (is.null(max_item) && cuestion %in% names(CONFIG$max_escala))
     max_item <- CONFIG$max_escala[[cuestion]]
@@ -991,11 +927,6 @@ ejecutar_combinacion <- function(cuestion, figura, momento = "pre",
   cat("\n", strrep("=", 70), "\n")
   cat("PROCESANDO:", etiq_base, "\n")
   cat(strrep("=", 70), "\n")
-
-  hoja_cw <- paste0(gsub("HSXXI", "SXXI", cuestion), "_", figura)
-  mapa_cw <- cargar_crosswalk(hoja_cw)
-  if (is.null(mapa_cw))
-    cat(sprintf("  [CROSSWALK] Sin mapa para '%s'\n", hoja_cw))
 
   reg <- catalogo %>%
     dplyr::filter(cuestion == !!cuestion,
@@ -1007,6 +938,10 @@ ejecutar_combinacion <- function(cuestion, figura, momento = "pre",
     return(invisible(NULL))
   }
 
+  # Códigos de ítems válidos según el crosswalk (para seleccionar columnas)
+  codes_2425 <- cw_df$code_2425[!is.na(cw_df$code_2425) & cw_df$code_2425 != "NA"]
+  codes_2526 <- cw_df$code_2526[!is.na(cw_df$code_2526) & cw_df$code_2526 != "NA"]
+
   resultados_ciclo <- list()
 
   for (i in seq_len(nrow(reg))) {
@@ -1015,21 +950,33 @@ ejecutar_combinacion <- function(cuestion, figura, momento = "pre",
     etiq  <- paste0(etiq_base, "_", ciclo)
 
     cat("\n  Ciclo:", ciclo, "— Archivo:", basename(ruta), "\n")
-    datos <- cargar_base(ruta, ciclo, mapa_cw = mapa_cw)
-    if (is.null(datos) || nrow(datos) < 30) {
+    datos_brutos <- cargar_base(ruta, ciclo)
+    if (is.null(datos_brutos) || nrow(datos_brutos) < 30) {
       cat("  Datos insuficientes (N <30) — omitido.\n"); next
     }
-    cat("  N sujetos:", nrow(datos), "| N ítems:", ncol(datos), "\n")
+
+    # Seleccionar solo columnas que están en el crosswalk para este ciclo
+    if (ciclo == "2425") {
+      cols_sel <- intersect(codes_2425, names(datos_brutos))
+    } else {
+      cols_sel <- intersect(codes_2526, names(datos_brutos))
+    }
+
+    if (length(cols_sel) == 0) {
+      cat("  Sin columnas del crosswalk en los datos — omitido.\n"); next
+    }
+
+    datos <- datos_brutos[, cols_sel, drop = FALSE]
+    cat(sprintf("  N sujetos: %d | N ítems crosswalk en datos: %d\n",
+                nrow(datos), ncol(datos)))
 
     res <- analizar_items(datos, etiq, max_item = max_item)
     if (is.null(res) || nrow(res) == 0) {
       cat("  Sin ítems analizables (todos continuos o excluidos) — omitido.\n")
       next
     }
-    res$ciclo   <- ciclo
-    res$momento <- momento
-    # Clave única para columnas en formato ancho: "2425pre", "2526pre", etc.
-    res$clave_cm <- paste0(ciclo, momento)
+    res$ciclo    <- ciclo
+    res$momento  <- momento
     resultados_ciclo[[paste0(ciclo, "_", momento)]] <- res
   }
 
@@ -1081,74 +1028,82 @@ generar_justificacion <- function(fila, claves_cm) {
   paste(razones, collapse = " ")
 }
 
-#' Pivota lista de resultados por ciclo+momento a formato ancho (1 fila por ítem).
-construir_tabla_ancha <- function(resultados_lista) {
-  if (length(resultados_lista) == 0) return(NULL)
+#' Construye tabla ancha usando el crosswalk como lista maestra de ítems.
+#' - Filas: cada ítem del crosswalk (code_2425 como identificador primario)
+#' - Columnas: code_2425, code_2526, texto_2425, tipo_match,
+#'             [indicadores por ciclo+momento], Decision_2425pre, Decision_2425post,
+#'             Decision_2526pre, Decision_final, Justificacion
+#'
+#' La unión con resultados de análisis es:
+#'   ciclo 2425 → por code_2425 (= Item en analizar_items)
+#'   ciclo 2526 → por code_2526 (= Item en analizar_items)
+construir_tabla_ancha <- function(resultados_lista, cw_df) {
+  if (length(resultados_lista) == 0 || is.null(cw_df) || nrow(cw_df) == 0) return(NULL)
 
-  # Universo de ítems: unión de todos los Item de todos los ciclos+momentos
-  todos_items <- unique(unlist(lapply(resultados_lista, function(r) r$Item)))
-  if (length(todos_items) == 0) return(NULL)
+  # Lista maestra: todas las filas del crosswalk (code_2425 es la llave primaria;
+  # para NUEVO items, code_2425 = NA y se usa code_2526 como llave)
+  tabla <- cw_df[, c("code_2425", "code_2526", "texto_2425", "tipo_match"),
+                 drop = FALSE]
 
-  # Columnas identificadoras (se toman del primer resultado disponible)
-  primer <- resultados_lista[[which(sapply(resultados_lista, nrow) > 0)[1]]]
-  cols_id <- intersect(c("Item", "tipo_item"), names(primer))
+  claves_cm <- names(resultados_lista)   # "2425_pre", "2426_post", "2526_pre", ...
 
-  tabla_base <- data.frame(Item = todos_items, stringsAsFactors = FALSE)
-
-  # Añadir tipo_item (EXACTO/NUEVO/SIN_MATCH) desde cualquier ciclo que lo tenga
-  tipo_map <- do.call(rbind, lapply(resultados_lista, function(r) {
-    if ("tipo_item" %in% names(r)) r[, c("Item", "tipo_item")] else NULL
-  }))
-  if (!is.null(tipo_map)) {
-    tipo_map <- tipo_map[!duplicated(tipo_map$Item), ]
-    tabla_base <- dplyr::left_join(tabla_base, tipo_map, by = "Item")
-  }
-
-  claves_cm <- names(resultados_lista)  # e.g. "2425_pre", "2425_post", "2526_pre"
-
-  # Añadir bloque de columnas por cada ciclo+momento
   for (clave in claves_cm) {
-    res <- resultados_lista[[clave]]
-    # Etiqueta compacta: "2425pre", "2526pre"
-    cm_label <- gsub("_", "", clave)  # "2425_pre" → "2425pre"
+    res      <- resultados_lista[[clave]]
+    ciclo    <- sub("_.*", "", clave)                   # "2425" o "2526"
+    cm_label <- gsub("_", "", clave)                    # "2425pre", "2526pre"
 
     cols_usar <- intersect(INDICADORES_CM, names(res))
     bloque    <- res[, c("Item", cols_usar), drop = FALSE]
     names(bloque)[-1] <- paste0(cm_label, "_", names(bloque)[-1])
 
-    tabla_base <- dplyr::left_join(tabla_base, bloque, by = "Item")
+    if (ciclo == "2425") {
+      # Unir por code_2425 = Item
+      names(bloque)[1] <- "code_2425"
+      tabla <- dplyr::left_join(tabla, bloque, by = "code_2425")
+    } else {
+      # Unir por code_2526 = Item
+      names(bloque)[1] <- "code_2526"
+      tabla <- dplyr::left_join(tabla, bloque, by = "code_2526")
+    }
   }
 
-  # Decisión final transversal: ELIMINAR si la mayoría de ciclos con datos dice ELIMINAR
-  dec_cols <- paste0(gsub("_", "", claves_cm), "_decision_final")
-  dec_cols  <- intersect(dec_cols, names(tabla_base))
+  # Columnas de decisión por ciclo+momento para la tabla de salida
+  dec_cols_cm <- paste0(gsub("_", "", claves_cm), "_decision_final")
+  dec_cols_cm <- intersect(dec_cols_cm, names(tabla))
 
-  tabla_base$ciclos_con_datos <- rowSums(!is.na(
-    tabla_base[, dec_cols, drop = FALSE]))
+  # Decisión por ciclo (renombrar para claridad)
+  for (dc in dec_cols_cm) {
+    nuevo_nombre <- sub("_decision_final$", "", dc)  # "2425pre", "2526pre"
+    nuevo_nombre <- paste0("Decision_", nuevo_nombre)
+    names(tabla)[names(tabla) == dc] <- nuevo_nombre
+  }
+  dec_cols_final <- paste0("Decision_", gsub("_", "", claves_cm))
+  dec_cols_final <- intersect(dec_cols_final, names(tabla))
 
-  tabla_base$ciclos_eliminar  <- rowSums(
-    sapply(dec_cols, function(d) {
-      v <- tabla_base[[d]]
+  # Decision_final: ELIMINAR si mayoría de ciclos con datos lo dicen
+  tabla$ciclos_datos <- rowSums(!is.na(tabla[, dec_cols_final, drop = FALSE]))
+  tabla$ciclos_elim  <- rowSums(
+    sapply(dec_cols_final, function(d) {
+      v <- tabla[[d]]
       ifelse(!is.na(v) & v == "ELIMINAR", 1L, 0L)
     }), na.rm = TRUE)
 
-  tabla_base$Decision <- dplyr::case_when(
-    tabla_base$ciclos_con_datos == 0                                      ~ "Sin datos",
-    tabla_base$ciclos_eliminar  >  tabla_base$ciclos_con_datos / 2        ~ "ELIMINAR",
-    tabla_base$ciclos_eliminar  == tabla_base$ciclos_con_datos & tabla_base$ciclos_con_datos > 0 ~ "ELIMINAR",
-    TRUE                                                                   ~ "Conservar"
+  tabla$Decision_final <- dplyr::case_when(
+    tabla$ciclos_datos == 0                                          ~ "Sin datos",
+    tabla$ciclos_elim  >= ceiling(tabla$ciclos_datos / 2)            ~ "ELIMINAR",
+    TRUE                                                              ~ "Conservar"
   )
 
   # Justificación
-  tabla_base$Justificacion <- apply(tabla_base, 1, function(r) {
-    generar_justificacion(as.list(r), gsub("_", "", claves_cm))
+  cm_labels <- gsub("_", "", claves_cm)
+  tabla$Justificacion <- apply(tabla, 1, function(r) {
+    generar_justificacion(as.list(r), cm_labels)
   })
 
-  # Quitar columnas auxiliares de conteo
-  tabla_base$ciclos_con_datos <- NULL
-  tabla_base$ciclos_eliminar  <- NULL
+  tabla$ciclos_datos <- NULL
+  tabla$ciclos_elim  <- NULL
 
-  tabla_base
+  tabla
 }
 
 #' Genera un Excel por cuestionario: una pestaña por figura educativa.
@@ -1168,24 +1123,37 @@ consolidar_cuestionario <- function(cuestion, catalogo) {
   for (figura in figuras) {
     cat("\n  Figura:", figura, "\n")
 
+    # Cargar crosswalk completo para esta figura (lista maestra de ítems)
+    hoja_cw <- paste0(gsub("HSXXI", "SXXI", cuestion), "_", figura)
+    cw_df   <- cargar_crosswalk_completo(hoja_cw)
+    if (is.null(cw_df) || nrow(cw_df) == 0) {
+      cat("  Sin entradas en crosswalk para", hoja_cw, "— pestaña omitida.\n")
+      next
+    }
+    cat(sprintf("  [CROSSWALK] %d ítems validados (OK) para %s\n", nrow(cw_df), hoja_cw))
+
     # Recopilar resultados de todos los momentos disponibles
     resultados_figura <- list()
 
     for (momento in momentos) {
       res_cm <- ejecutar_combinacion(cuestion, figura, momento,
-                                     catalogo, max_item = max_item)
+                                     catalogo, cw_df = cw_df, max_item = max_item)
       if (!is.null(res_cm) && length(res_cm) > 0)
         resultados_figura <- c(resultados_figura, res_cm)
     }
 
     if (length(resultados_figura) == 0) {
-      cat("  Sin resultados para figura", figura, "— pestaña omitida.\n")
-      next
+      cat("  Sin resultados de análisis para figura", figura,
+          "— se incluye tabla de ítems sin indicadores.\n")
+      # Aún así generar la pestaña con la lista de ítems del crosswalk
+      tabla_ancha <- cw_df[, c("code_2425", "code_2526", "texto_2425", "tipo_match")]
+      tabla_ancha$Decision_final <- "Sin datos"
+      tabla_ancha$Justificacion  <- "No se encontraron archivos de datos para este ciclo"
+    } else {
+      # Tabla ancha: crosswalk × (indicadores por ciclo+momento)
+      tabla_ancha <- construir_tabla_ancha(resultados_figura, cw_df)
+      if (is.null(tabla_ancha) || nrow(tabla_ancha) == 0) next
     }
-
-    # Tabla ancha: ítems × (indicadores por ciclo+momento)
-    tabla_ancha <- construir_tabla_ancha(resultados_figura)
-    if (is.null(tabla_ancha) || nrow(tabla_ancha) == 0) next
 
     # Escribir pestaña
     agregar_hoja_tabla(wb,
