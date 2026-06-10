@@ -327,8 +327,6 @@ diagnostico_NA <- function(datos, etiqueta) {
 analizar_items <- function(datos, etiqueta, max_item = NULL) {
 
   # Máximo teórico por ítem (escala inicia en 0).
-  # Si max_item es un escalar se aplica igual a todos; si es NULL se detecta
-  # automáticamente por columna (necesario cuando hay mezcla 0-3 / 0-4).
   max_obs <- sapply(datos, function(x) {
     v <- max(x, na.rm = TRUE)
     if (is.infinite(v) || is.nan(v)) NA_real_ else v
@@ -340,12 +338,27 @@ analizar_items <- function(datos, etiqueta, max_item = NULL) {
     max_obs
   }
 
-  # Umbral para detectar variables continuas (edad, días, horas, etc.)
-  # Si el máximo observado supera este valor, el ítem se trata como continuo
-  # y se excluye del pipeline psicométrico (TCT/IRT/EFA requieren escala acotada).
-  MAX_ESCALA_LIKERT <- 10   # cualquier ítem con max > 10 se considera continuo
+  MAX_ESCALA_LIKERT <- 10
 
-  continuas <- !is.na(max_por_item) & max_por_item > MAX_ESCALA_LIKERT
+  continuas    <- !is.na(max_por_item) & max_por_item > MAX_ESCALA_LIKERT
+  problemas_max <- is.na(max_por_item) | max_por_item <= 0
+
+  # --- Tabla descriptiva para TODOS los ítems (incluyendo continuos y sin datos) ---
+  # Se calcula antes de filtrar para que aparezcan en la salida con su razón.
+  desc_todos <- data.frame(
+    Item        = names(datos),
+    n_validos   = as.integer(colSums(!is.na(datos))),
+    pct_NA      = round(colMeans(is.na(datos)) * 100, 1),
+    media       = round(sapply(datos, mean, na.rm = TRUE), 3),
+    max_observado = max_obs,
+    tipo_variable = dplyr::case_when(
+      continuas     ~ "Continua (max>10)",
+      problemas_max ~ "Sin variabilidad",
+      TRUE          ~ "Escala"
+    ),
+    stringsAsFactors = FALSE
+  )
+
   if (any(continuas)) {
     cat(sprintf("  [AVISO] %d ítems continuos excluidos del análisis psicométrico (max > %d): %s\n",
                 sum(continuas), MAX_ESCALA_LIKERT,
@@ -692,6 +705,45 @@ analizar_items <- function(datos, etiqueta, max_item = NULL) {
     attr(tabla, "alpha_reducida") <- alpha_red
   }
 
+  # --- Agregar ítems excluidos (continuos / sin variabilidad) a la tabla ---
+  # Aparecen con indicadores NA y decision_final explicativa, para que figuren
+  # en la salida y se pueda ver por qué no tienen análisis psicométrico.
+  items_en_tabla <- tabla$Item
+  items_excluidos <- desc_todos[!desc_todos$Item %in% items_en_tabla, ]
+  if (nrow(items_excluidos) > 0) {
+    filas_excl <- data.frame(
+      Item          = items_excluidos$Item,
+      tipo_item     = NA_character_,
+      max_escala    = items_excluidos$max_observado,
+      pct_NA        = items_excluidos$pct_NA,
+      flag_NA       = ifelse(items_excluidos$pct_NA > CONFIG$umbral_NA_pct,
+                             "DATOS_INSUFICIENTES", "OK"),
+      media         = items_excluidos$media,
+      sd            = NA_real_,
+      p_dificultad  = NA_real_,
+      ritc          = NA_real_,
+      alpha_sin_item= NA_real_,
+      b_Rasch       = NA_real_,
+      infit_MNSQ    = NA_real_,
+      outfit_MNSQ   = NA_real_,
+      a_GRM         = NA_real_,
+      info_theta0_GRM = NA_real_,
+      comunalidad_EFA = NA_real_,
+      estabilidad_EGA = NA_real_,
+      votos_eliminacion = NA_integer_,
+      decision_final = dplyr::case_when(
+        items_excluidos$tipo_variable == "Continua (max>10)" ~ "Variable continua",
+        items_excluidos$pct_NA > CONFIG$umbral_NA_pct        ~ "DATOS_INSUFICIENTES",
+        TRUE                                                  ~ "Sin variabilidad"
+      ),
+      stringsAsFactors = FALSE
+    )
+    # Añadir columnas eliminar_* que pueden estar en tabla pero no en filas_excl
+    for (col in setdiff(names(tabla), names(filas_excl)))
+      filas_excl[[col]] <- NA
+    tabla <- dplyr::bind_rows(tabla, filas_excl[, names(tabla)])
+  }
+
   tabla
 }
 
@@ -1024,6 +1076,16 @@ generar_justificacion <- function(fila, claves_cm) {
     if (length(problemas) > 0)
       razones <- c(razones, paste0("[", cm, ": ", paste(problemas, collapse=", "), "]"))
   }
+  # Verificar si algún ciclo reportó variable continua o sin datos
+  dec_vals <- sapply(claves_cm, function(cm) {
+    v <- fila[[paste0("Decision_", cm)]] %||% fila[[paste0(cm, "_decision_final")]]
+    if (is.null(v)) NA_character_ else as.character(v)
+  })
+  if (any(!is.na(dec_vals) & dec_vals == "Variable continua"))
+    return("Variable de conteo (días, horas, años): no aplica análisis psicométrico. Conservar o eliminar según criterio de contenido.")
+  if (all(is.na(dec_vals) | dec_vals == "Sin datos"))
+    return("Sin datos en ningún ciclo disponible: ítem no encontrado en los archivos de datos.")
+
   if (length(razones) == 0) return("Conservar en todos los ciclos disponibles")
   paste(razones, collapse = " ")
 }
