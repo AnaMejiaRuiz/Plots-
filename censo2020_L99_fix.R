@@ -356,36 +356,6 @@ cohorte <- per_raw |>
     select(id_viv, hacinamiento, sin_elect, sin_agua, sin_drenaje,
            brecha_dig, piso_tierra, tipo_hogar), by="id_viv")
 
-# Escolaridad y actividad del jefe/a
-# Detectar nombre real de la columna de parentesco (varía según archivo)
-col_parent <- intersect(c("parent","parentesco","relacion"), names(per_raw))[1]
-if (is.na(col_parent))
-  stop("No se encontró columna de parentesco en per_raw. Columnas disponibles: ",
-       paste(names(per_raw), collapse=", "))
-
-jefes <- per_raw |>
-  filter(.data[[col_parent]] == "01") |>
-  mutate(
-    escol = case_when(
-      nivacad=="00"~"Sin escolaridad", nivacad=="01"~"Preescolar",
-      nivacad=="02"~"Primaria",        nivacad=="03"~"Secundaria",
-      nivacad %in% c("04","05")~"Bachillerato",
-      as.numeric(nivacad) >= 6 ~ "Superior", TRUE~NA_character_),
-    escol_n = case_when(
-      nivacad=="00"~0, nivacad=="01"~1, nivacad=="02"~2,
-      nivacad=="03"~3, nivacad %in% c("04","05")~4,
-      as.numeric(nivacad)>=6~5, TRUE~NA_real_),
-    activ = case_when(
-      as.numeric(conact) %in% 10:20 ~ "Trabaja",
-      conact=="30" ~ "Busca empleo",
-      conact=="50" ~ "Estudia",
-      conact=="60" ~ "Quehaceres del hogar",
-      conact %in% c("70","80") ~ "No trabaja",
-      TRUE~NA_character_)
-  ) |>
-  select(id_viv, escol, escol_n, activ)
-
-cohorte <- cohorte |> left_join(jefes, by="id_viv")
 cat(sprintf("✓ Cohorte 8-11 años: %s personas\n",
     format(nrow(cohorte), big.mark=",")))
 
@@ -686,49 +656,6 @@ print("g5 heatmap guardado (Python)")
   guardar_graf(g5, "g5_PI3_heatmap_carencias_R", w=12, h=9)
 }
 
-# ── GRÁFICO 6: Escolaridad del jefe del hogar (barras 100%) ──────────────────
-
-niveles_escol <- c("Sin escolaridad","Preescolar","Primaria",
-                   "Secundaria","Bachillerato","Superior")
-colores_escol <- setNames(
-  c(pal$vino1,"#922B21",pal$dor1,"#E0BA87",pal$azul2,pal$azul1),
-  niveles_escol)
-
-g6_data <- cohorte |>
-  filter(!is.na(escol)) |>
-  mutate(escol = factor(escol, levels = niveles_escol)) |>
-  count(nom_ent_abr, escol, .drop = FALSE) |>
-  group_by(nom_ent_abr) |>
-  mutate(pct = n / sum(n) * 100) |>
-  ungroup()
-
-# Orden por proporción de escolaridad baja (externo a aes para evitar conflicto de niveles)
-ord_g6 <- g6_data |>
-  filter(escol %in% c("Sin escolaridad", "Preescolar", "Primaria")) |>
-  group_by(nom_ent_abr) |>
-  summarise(pct_baja = sum(pct), .groups = "drop") |>
-  arrange(pct_baja)
-
-g6_data <- g6_data |>
-  mutate(nom_ent_abr = factor(nom_ent_abr, levels = ord_g6$nom_ent_abr))
-
-g6 <- ggplot(g6_data, aes(n, nom_ent_abr, fill = escol)) +
-  geom_col(position = "fill", width = .85) +
-  scale_fill_manual(values = colores_escol, name = "Último nivel aprobado",
-                    drop = FALSE) +
-  scale_x_continuous(labels = label_percent(),
-                     expand = expansion(mult = c(0, .01))) +
-  geom_vline(xintercept = .5, linetype = "dashed",
-             color = pal$gris2, linewidth = .5) +
-  labs(
-    title    = "**Escolaridad del jefe/a del hogar — cohorte 8-11 años (2020)**",
-    subtitle = "Proporción por nivel educativo y entidad federativa",
-    x = "Proporción", y = NULL,
-    caption  = "**Fuente:** Microdatos de ejemplo, Censo 2020 (INEGI).
-             Escolaridad de la persona de referencia del hogar (PARENT=01).") +
-  theme(axis.text.y = element_text(size = 8),
-        legend.key.size = unit(.4, "cm"))
-guardar_graf(g6, "g6_PI3_escolaridad_jefe_hogar", w=13, h=8)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -808,7 +735,7 @@ guardar_graf(g7, "g7_PI4_IVE_boxplot_entidad", w=12, h=8)
 comp_quintil <- vuln_micro |>
   group_by(grupo) |>
   summarise(across(c(n_hli,n_rural,n_discap,n_noasis,n_agua,
-                     n_elect,n_brecha,n_piso,n_hacin,n_escol),
+                     n_elect,n_brecha,n_piso,n_hacin),
                    ~mean(.x,na.rm=T)), .groups="drop")
 
 write_csv(comp_quintil, "outputs/censo2020/python/radar_data.csv")
@@ -826,7 +753,7 @@ labels = {
     "n_discap":"Discapacidad","n_noasis":"No asiste",
     "n_agua":"Sin agua","n_elect":"Sin electricidad",
     "n_brecha":"Brecha digital","n_piso":"Piso tierra",
-    "n_hacin":"Hacinamiento","n_escol":"Escolaridad\nbaja jefe"
+    "n_hacin":"Hacinamiento"
 }
 cats   = list(labels.values())
 N      = len(cats)
@@ -883,7 +810,7 @@ print("g8 radar guardado (Python)")
       n_hli="HLI",n_rural="Ruralidad",n_discap="Discapacidad",
       n_noasis="No asiste",n_agua="Sin agua",n_elect="Sin elect.",
       n_brecha="Brecha dig.",n_piso="Piso tierra",
-      n_hacin="Hacinamiento",n_escol="Escol. baja"),
+      n_hacin="Hacinamiento"),
     grupo=factor(grupo,levels=c("Muy alta","Alta","Media","Baja","Muy baja"))) |>
     ggplot(aes(comp, val, fill=grupo, group=grupo)) +
     geom_col(position="dodge", width=.75, alpha=.85) +
