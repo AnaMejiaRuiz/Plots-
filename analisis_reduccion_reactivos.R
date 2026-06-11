@@ -5,11 +5,20 @@
 # Ciclos: 2024-2025 (2425) y 2025-2026 (2526)
 #
 # Métodos:
-#   1. Teoría Clásica de los Tests (TCT/CTT)
-#   2. Teoría de Respuesta al Ítem (TRI/IRT) — Rasch, GRM
-#   3. Análisis Factorial Exploratorio (AFE/EFA)
-#   4. Psicometría de Redes (EGA)
-#   5. Comparación entre ciclos y decisión integrada
+#   1. Teoría Clásica de los Tests (TCT)         — vota en decisión
+#   2. IRT: GRM (Samejima)                        — vota en decisión
+#   3. IRT: Rasch/PCM                             — solo descriptivo (b, infit, outfit)
+#   4. Análisis Factorial Exploratorio (EFA)      — vota en decisión
+#   5. AFC unifactorial (lavaan, WLSMV)           — vota en decisión
+#   6. Omega (psych) — omega_total y reducida     — solo descriptivo
+#   7. Psicometría de Redes (EGA / bootEGA)       — solo descriptivo
+#   8. Comparación entre ciclos y decisión final
+#
+# Regla de decisión (por ítem, por ciclo+momento):
+#   Métodos que votan: TCT, GRM, EFA, AFC → máximo 4 votos de eliminación
+#   ELIMINAR         ≥ 4 votos convergentes
+#   REVISAR          = 3 votos convergentes
+#   Conservar        ≤ 2 votos
 # =============================================================================
 
 # =============================================================================
@@ -78,10 +87,12 @@ CONFIG <- list(
   umbral_dif_max     = 0.80,  # índice de dificultad normalizado máximo
   umbral_infit       = 1.30,
   umbral_outfit      = 1.30,
-  umbral_a_grm       = 0.50,  # discriminación GRM mínima
-  umbral_comunalidad = 0.20,
+  umbral_a_grm       = 0.70,  # discriminación GRM mínima (↑ de 0.50)
+  umbral_comunalidad = 0.30,  # comunalidad EFA mínima   (↑ de 0.20)
   umbral_estabilidad = 0.50,  # EGA item stability
-  umbral_votos       = 2      # mínimo de métodos que deben coincidir para eliminar
+  umbral_carga_AFC   = 0.40,  # carga estandarizada mínima en AFC unifactorial
+  umbral_R2_AFC      = 0.20,  # R² mínimo en AFC (= carga² mínimo)
+  umbral_votos       = 3      # votos para REVISAR; ≥4 → ELIMINAR (Rasch/EGA excluidos)
 )
 
 # Tratamiento de "No lo sé / Prefiero no contestar" → NA
@@ -646,7 +657,38 @@ analizar_items <- function(datos, etiqueta, max_item = NULL) {
   }, error = function(e) warning("EFA error: ", e$message))
 
   # -------------------------------------------------------------------------
-  # 4e. EGA (Psicometría de Redes)
+  # 4e. AFC — Análisis Factorial Confirmatorio (modelo unifactorial con lavaan)
+  # Vota en la decisión final junto con TCT, GRM y EFA.
+  # Falla graciosamente ante convergencia no lograda, N insuficiente o
+  # matriz singular: en ese caso carga_AFC / R2_AFC quedan como NA.
+  # -------------------------------------------------------------------------
+  cat("  AFC...\n")
+  tryCatch({
+    items_afc  <- names(datos_limpios)
+    modelo_afc <- paste0("F =~ ", paste(items_afc, collapse = " + "))
+    fit_afc    <- lavaan::cfa(modelo_afc, data = datos_limpios,
+                              ordered = TRUE, estimator = "WLSMV")
+    params     <- lavaan::parameterEstimates(fit_afc, standardized = TRUE)
+    cargas     <- params[params$op == "=~", ]
+
+    afc_df <- data.frame(
+      Item         = cargas$rhs,
+      carga_AFC    = round(cargas$std.all, 3),
+      R2_AFC       = round(cargas$std.all^2, 3),
+      eliminar_AFC = ifelse(
+        abs(cargas$std.all) < CONFIG$umbral_carga_AFC |
+          cargas$std.all^2  < CONFIG$umbral_R2_AFC,
+        "ELIMINAR", "Conservar"),
+      stringsAsFactors = FALSE
+    )
+    tabla <- dplyr::left_join(tabla, afc_df, by = "Item")
+    cat(sprintf("    AFC WLSMV: %d ítems con carga < %.2f\n",
+                sum(afc_df$eliminar_AFC == "ELIMINAR", na.rm = TRUE),
+                CONFIG$umbral_carga_AFC))
+  }, error = function(e) warning("AFC error: ", e$message))
+
+  # -------------------------------------------------------------------------
+  # 4f. EGA (Psicometría de Redes) — solo descriptivo, no vota
   # -------------------------------------------------------------------------
   cat("  EGA...\n")
   tryCatch({
@@ -689,13 +731,33 @@ analizar_items <- function(datos, etiqueta, max_item = NULL) {
   }, error = function(e) warning("EGA error: ", e$message))
 
   # -------------------------------------------------------------------------
-  # 4f. Decisión integrada por votos
+  # 4g. Omega (psych) — fiabilidad compuesta del conjunto completo de ítems
+  # Resultado a nivel escala; se guarda como atributo de la tabla.
   # -------------------------------------------------------------------------
-  cols_elim <- grep("^eliminar_", names(tabla), value = TRUE)
+  cat("  Omega...\n")
+  omega_total_val <- tryCatch({
+    om_full <- psych::omega(datos_limpios, nfactors = 1,
+                            plot = FALSE, warnings = FALSE, fm = "ml")
+    round(om_full$omega.tot, 3)
+  }, error = function(e) { warning("Omega error: ", e$message); NA_real_ })
+  attr(tabla, "omega_total") <- omega_total_val
+  cat(sprintf("    omega_total = %s\n",
+              if (is.na(omega_total_val)) "NA" else sprintf("%.3f", omega_total_val)))
 
-  if (length(cols_elim) > 0) {
+  # -------------------------------------------------------------------------
+  # 4h. Decisión integrada por votos
+  # Métodos que votan: TCT, GRM, EFA, AFC (máx 4 votos).
+  # Rasch y EGA son solo evidencia descriptiva — no votan.
+  # ELIMINAR ≥4 | REVISAR =3 | Conservar ≤2
+  # -------------------------------------------------------------------------
+  cols_votan <- intersect(
+    c("eliminar_TCT", "eliminar_GRM", "eliminar_EFA", "eliminar_AFC"),
+    names(tabla)
+  )
+
+  if (length(cols_votan) > 0) {
     tabla$votos_eliminacion <- rowSums(
-      sapply(cols_elim, function(col) {
+      sapply(cols_votan, function(col) {
         v <- tabla[[col]]
         ifelse(is.na(v), 0L, as.integer(v == "ELIMINAR"))
       }),
@@ -704,13 +766,34 @@ analizar_items <- function(datos, etiqueta, max_item = NULL) {
 
     tabla$decision_final <- dplyr::case_when(
       tabla$flag_NA == "DATOS_INSUFICIENTES" ~ "DATOS_INSUFICIENTES",
-      tabla$votos_eliminacion >= CONFIG$umbral_votos ~ "ELIMINAR",
-      TRUE ~ "Conservar"
+      tabla$votos_eliminacion >= 4           ~ "ELIMINAR",
+      tabla$votos_eliminacion == 3           ~ "REVISAR",
+      TRUE                                   ~ "Conservar"
     )
   }
 
+  # Omega escala reducida (solo ítems Conservar)
+  tryCatch({
+    items_cons <- tabla$Item[!is.na(tabla$decision_final) &
+                               tabla$decision_final == "Conservar" &
+                               tabla$Item %in% names(datos_limpios)]
+    if (length(items_cons) >= 3) {
+      om_red <- psych::omega(datos_limpios[, items_cons, drop = FALSE],
+                             nfactors = 1, plot = FALSE, warnings = FALSE, fm = "ml")
+      omega_red_val <- round(om_red$omega.tot, 3)
+      attr(tabla, "omega_reducida") <- omega_red_val
+      cat(sprintf("  Omega escala reducida (%d ítems Conservar): %.3f\n",
+                  length(items_cons), omega_red_val))
+    } else {
+      attr(tabla, "omega_reducida") <- NA_real_
+    }
+  }, error = function(e) {
+    warning("Omega reducida error: ", e$message)
+    attr(tabla, "omega_reducida") <- NA_real_
+  })
+
   # -------------------------------------------------------------------------
-  # 4g. Gráfico de perfil de ítems (ritc + dificultad + decisión)
+  # 4i. Gráfico de perfil de ítems (ritc + dificultad + decisión)
   # -------------------------------------------------------------------------
   tryCatch({
     dir_fig <- file.path(CONFIG$dir_salida, "figuras")
@@ -800,10 +883,13 @@ analizar_items <- function(datos, etiqueta, max_item = NULL) {
       b_Rasch       = NA_real_,
       infit_MNSQ    = NA_real_,
       outfit_MNSQ   = NA_real_,
-      a_GRM         = NA_real_,
-      info_theta0_GRM = NA_real_,
-      comunalidad_EFA = NA_real_,
-      estabilidad_EGA = NA_real_,
+      a_GRM             = NA_real_,
+      info_theta0_GRM   = NA_real_,
+      comunalidad_EFA   = NA_real_,
+      carga_AFC         = NA_real_,
+      R2_AFC            = NA_real_,
+      eliminar_AFC      = NA_character_,
+      estabilidad_EGA   = NA_real_,
       votos_eliminacion = NA_integer_,
       decision_final = dplyr::case_when(
         items_excluidos$tipo_variable == "Continua (max>10)" ~ "Variable continua",
@@ -850,6 +936,7 @@ comparar_ciclos <- function(tabla_A, tabla_B, ciclo_A = "2425", ciclo_B = "2526"
   indicadores <- c("tipo_item", "pct_NA", "p_dificultad", "ritc", "alpha_sin_item",
                    "b_Rasch", "infit_MNSQ", "outfit_MNSQ",
                    "a_GRM", "info_theta0_GRM", "comunalidad_EFA",
+                   "carga_AFC", "R2_AFC",
                    "estabilidad_EGA", "votos_eliminacion", "decision_final")
 
   # Helper: extraer columnas disponibles con sufijo
@@ -1115,9 +1202,13 @@ ejecutar_combinacion <- function(cuestion, figura, momento = "pre",
 
 # Indicadores que se replican por cada ciclo+momento
 INDICADORES_CM <- c("pct_NA", "media", "p_dificultad", "ritc",
-                     "alpha_sin_item", "b_Rasch", "infit_MNSQ", "outfit_MNSQ",
-                     "a_GRM", "comunalidad_EFA", "estabilidad_EGA",
-                     "decision_final")
+                     "alpha_sin_item",
+                     "b_Rasch", "infit_MNSQ", "outfit_MNSQ",          # Rasch — descriptivo
+                     "a_GRM",                                           # GRM   — vota
+                     "comunalidad_EFA",                                 # EFA   — vota
+                     "carga_AFC", "R2_AFC",                             # AFC   — vota
+                     "estabilidad_EGA",                                 # EGA   — descriptivo
+                     "votos_eliminacion", "decision_final")
 
 #' Construye una fila de justificación a partir de los indicadores por ciclo.
 generar_justificacion <- function(fila, claves_cm) {
@@ -1144,8 +1235,10 @@ generar_justificacion <- function(fila, claves_cm) {
     if (gt(fila[[paste0(cm, "_infit_MNSQ")]],       CONFIG$umbral_infit))      problemas <- c(problemas, sprintf("infit=%.2f", num1(fila[[paste0(cm, "_infit_MNSQ")]])))
     if (gt(fila[[paste0(cm, "_outfit_MNSQ")]],      CONFIG$umbral_outfit))     problemas <- c(problemas, sprintf("outfit=%.2f",num1(fila[[paste0(cm, "_outfit_MNSQ")]])))
     if (lt(fila[[paste0(cm, "_a_GRM")]],            CONFIG$umbral_a_grm))      problemas <- c(problemas, sprintf("a_GRM=%.2f", num1(fila[[paste0(cm, "_a_GRM")]])))
-    if (lt(fila[[paste0(cm, "_comunalidad_EFA")]], CONFIG$umbral_comunalidad)) problemas <- c(problemas, sprintf("h2=%.2f",    num1(fila[[paste0(cm, "_comunalidad_EFA")]])))
-    if (lt(fila[[paste0(cm, "_estabilidad_EGA")]], CONFIG$umbral_estabilidad)) problemas <- c(problemas, sprintf("estab=%.2f", num1(fila[[paste0(cm, "_estabilidad_EGA")]])))
+    if (lt(fila[[paste0(cm, "_comunalidad_EFA")]], CONFIG$umbral_comunalidad)) problemas <- c(problemas, sprintf("h2=%.2f",       num1(fila[[paste0(cm, "_comunalidad_EFA")]])))
+    if (lt(fila[[paste0(cm, "_carga_AFC")]],       CONFIG$umbral_carga_AFC))   problemas <- c(problemas, sprintf("carga_AFC=%.2f", num1(fila[[paste0(cm, "_carga_AFC")]])))
+    if (lt(fila[[paste0(cm, "_R2_AFC")]],          CONFIG$umbral_R2_AFC))      problemas <- c(problemas, sprintf("R2_AFC=%.2f",    num1(fila[[paste0(cm, "_R2_AFC")]])))
+    if (lt(fila[[paste0(cm, "_estabilidad_EGA")]], CONFIG$umbral_estabilidad)) problemas <- c(problemas, sprintf("estab=%.2f",     num1(fila[[paste0(cm, "_estabilidad_EGA")]])))
 
     if (length(problemas) > 0)
       razones <- c(razones, paste0("[", cm, ": ", paste(problemas, collapse=", "), "]"))
@@ -1159,7 +1252,8 @@ generar_justificacion <- function(fila, claves_cm) {
     return("Variable de conteo (días, horas, años): no aplica análisis psicométrico. Conservar o eliminar según criterio de contenido.")
   if (all(is.na(dec_vals) | dec_vals == "Sin datos"))
     return("Sin datos en ningún ciclo disponible: ítem no encontrado en los archivos de datos.")
-
+  if (any(!is.na(dec_vals) & dec_vals == "REVISAR") && length(razones) > 0)
+    return(paste("REVISAR —", paste(razones, collapse = " ")))
   if (length(razones) == 0) return("Conservar en todos los ciclos disponibles")
   paste(razones, collapse = " ")
 }
@@ -1216,18 +1310,27 @@ construir_tabla_ancha <- function(resultados_lista, cw_df) {
   dec_cols_final <- paste0("Decision_", gsub("_", "", claves_cm))
   dec_cols_final <- intersect(dec_cols_final, names(tabla))
 
-  # Decision_final: ELIMINAR si mayoría de ciclos con datos lo dicen
-  tabla$ciclos_datos <- rowSums(!is.na(tabla[, dec_cols_final, drop = FALSE]))
-  tabla$ciclos_elim  <- rowSums(
+  # Decision_final consolidada entre ciclos:
+  #   ELIMINAR  → mayoría de ciclos disponibles dicen ELIMINAR
+  #   REVISAR   → algún ciclo dice REVISAR (y ninguno da mayoría ELIMINAR)
+  #   Conservar → resto
+  tabla$ciclos_datos   <- rowSums(!is.na(tabla[, dec_cols_final, drop = FALSE]))
+  tabla$ciclos_elim    <- rowSums(
     sapply(dec_cols_final, function(d) {
       v <- tabla[[d]]
       ifelse(!is.na(v) & v == "ELIMINAR", 1L, 0L)
     }), na.rm = TRUE)
+  tabla$ciclos_revisar <- rowSums(
+    sapply(dec_cols_final, function(d) {
+      v <- tabla[[d]]
+      ifelse(!is.na(v) & v == "REVISAR", 1L, 0L)
+    }), na.rm = TRUE)
 
   tabla$Decision_final <- dplyr::case_when(
-    tabla$ciclos_datos == 0                                          ~ "Sin datos",
-    tabla$ciclos_elim  >= ceiling(tabla$ciclos_datos / 2)            ~ "ELIMINAR",
-    TRUE                                                              ~ "Conservar"
+    tabla$ciclos_datos   == 0                               ~ "Sin datos",
+    tabla$ciclos_elim    >= ceiling(tabla$ciclos_datos / 2) ~ "ELIMINAR",
+    tabla$ciclos_revisar >= 1                               ~ "REVISAR",
+    TRUE                                                    ~ "Conservar"
   )
 
   # Justificación
@@ -1236,8 +1339,9 @@ construir_tabla_ancha <- function(resultados_lista, cw_df) {
     generar_justificacion(as.list(r), cm_labels)
   })
 
-  tabla$ciclos_datos <- NULL
-  tabla$ciclos_elim  <- NULL
+  tabla$ciclos_datos   <- NULL
+  tabla$ciclos_elim    <- NULL
+  tabla$ciclos_revisar <- NULL
 
   tabla
 }
@@ -1295,23 +1399,37 @@ consolidar_cuestionario <- function(cuestion, catalogo) {
     agregar_hoja_tabla(wb,
                        nombre_hoja  = figura,
                        tabla        = tabla_ancha,
-                       col_decision = "Decision")
+                       col_decision = "Decision_final")
 
     # Acumular para pestaña resumen
     n_total   <- nrow(tabla_ancha)
-    n_elim    <- sum(tabla_ancha$Decision == "ELIMINAR",  na.rm = TRUE)
-    n_cons    <- sum(tabla_ancha$Decision == "Conservar", na.rm = TRUE)
+    n_elim    <- sum(tabla_ancha$Decision_final == "ELIMINAR",  na.rm = TRUE)
+    n_revisar <- sum(tabla_ancha$Decision_final == "REVISAR",   na.rm = TRUE)
+    n_cons    <- sum(tabla_ancha$Decision_final == "Conservar", na.rm = TRUE)
+
+    # Extraer omegas del primer resultado disponible con análisis para esta figura
+    omega_tot <- NA_real_
+    omega_red <- NA_real_
+    for (res_k in resultados_figura) {
+      ot <- attr(res_k, "omega_total")
+      or <- attr(res_k, "omega_reducida")
+      if (!is.null(ot) && !is.na(ot)) { omega_tot <- ot; omega_red <- or; break }
+    }
+
     resumen_filas[[figura]] <- data.frame(
       cuestionario    = cuestion,
       figura          = figura,
       total_items     = n_total,
       a_eliminar      = n_elim,
+      a_revisar       = n_revisar,
       a_conservar     = n_cons,
       pct_reduccion   = round(n_elim / n_total * 100, 1),
+      omega_total     = omega_tot,
+      omega_reducida  = omega_red,
       stringsAsFactors = FALSE
     )
-    cat(sprintf("  [OK] %s: %d ítems | %d Eliminar | %d Conservar\n",
-                figura, n_total, n_elim, n_cons))
+    cat(sprintf("  [OK] %s: %d ítems | %d Eliminar | %d Revisar | %d Conservar\n",
+                figura, n_total, n_elim, n_revisar, n_cons))
   }
 
   if (length(resumen_filas) == 0) {
