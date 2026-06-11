@@ -4,21 +4,41 @@
 # Cuestionarios: HD, HSXXI, HI, CTXT
 # Ciclos: 2024-2025 (2425) y 2025-2026 (2526)
 #
-# Métodos:
-#   1. Teoría Clásica de los Tests (TCT)         — vota en decisión
-#   2. IRT: GRM (Samejima)                        — vota en decisión
-#   3. IRT: Rasch/PCM                             — solo descriptivo (b, infit, outfit)
-#   4. Análisis Factorial Exploratorio (EFA)      — vota en decisión
-#   5. AFC unifactorial (lavaan, WLSMV)           — vota en decisión
-#   6. Omega (psych) — omega_total y reducida     — solo descriptivo
-#   7. Psicometría de Redes (EGA / bootEGA)       — solo descriptivo
-#   8. Comparación entre ciclos y decisión final
+# ── PIPELINE A: INSTRUMENTOS DE PERCEPCIÓN (HD, HSXXI, HI) ──────────────────
+#   Supuesto reflectivo: ítems son manifestaciones de una variable latente.
+#   1. TCT — Alpha, ritc, dificultad        → VOTA en decisión
+#   2. GRM (Samejima)                       → VOTA en decisión
+#   3. EFA unifactorial (comunalidades)     → VOTA en decisión
+#   4. AFC unifactorial (lavaan, WLSMV)     → VOTA en decisión
+#   5. Rasch/PCM — b, infit, outfit         → solo descriptivo
+#   6. EGA (bootEGA + itemStability)        → solo descriptivo
+#   7. Omega (psych) — omega_total/reducida → solo descriptivo
 #
-# Regla de decisión (por ítem, por ciclo+momento):
-#   Métodos que votan: TCT, GRM, EFA, AFC → máximo 4 votos de eliminación
-#   ELIMINAR         ≥ 4 votos convergentes
-#   REVISAR          = 3 votos convergentes
-#   Conservar        ≤ 2 votos
+#   Regla de decisión (máx 4 votos):
+#     ELIMINAR  ≥ 4 votos  |  REVISAR = 3  |  Conservar ≤ 2
+#
+# ── PIPELINE B: CUESTIONARIO DE CONTEXTO (CTXT) ─────────────────────────────
+#   CTXT no es un instrumento reflectivo: los reactivos describen
+#   características del hogar, acceso, recursos, participación, etc.
+#   No se aplican Alpha, Omega, Rasch, GRM, EFA, EGA ni AFC.
+#   Solo análisis descriptivo por ítem:
+#     pct_NA, media, sd, varianza, frecuencias, prop_modal,
+#     n_categorias_usadas, baja_variabilidad, efecto_techo/piso
+#   Clasificación (no eliminación automática):
+#     CONSERVAR          0 criterios problemáticos
+#     REVISAR            1 criterio problemático
+#     INFORMACIÓN LIMITADA ≥ 2 criterios problemáticos
+#   Criterios: pct_NA>20% | prop_modal>80% | n_cat<2 | sd<0.50
+#
+# ── NOTA SOBRE AFC MULTIDIMENSIONAL ─────────────────────────────────────────
+#   El crosswalk (CROSSWALK_COMPLETO) contiene la columna 'dimension' que
+#   mapea cada ítem a su dimensión teórica. cargar_crosswalk_completo()
+#   actualmente descarta esa columna. Cuando se quiera implementar AFC por
+#   dimensión, basta con:
+#     (a) preservar sub_cw$dimension en cargar_crosswalk_completo()
+#     (b) construir un modelo CFA multi-grupo en analizar_items_psicometrico()
+#         usando esa estructura como especificación.
+#   VER REPORTE al final del script (función reportar_dimensiones_cw).
 # =============================================================================
 
 # =============================================================================
@@ -409,7 +429,7 @@ diagnostico_NA <- function(datos, etiqueta) {
 #'                   Si NULL se deriva del máximo observado en los datos.
 #' @return data.frame con todos los indicadores por ítem
 
-analizar_items <- function(datos, etiqueta, max_item = NULL) {
+analizar_items_psicometrico <- function(datos, etiqueta, max_item = NULL) {
 
   # Máximo teórico por ítem (escala inicia en 0).
   max_obs <- sapply(datos, function(x) {
@@ -908,13 +928,170 @@ analizar_items <- function(datos, etiqueta, max_item = NULL) {
 }
 
 # =============================================================================
+# 4-B. PIPELINE DE CONTEXTO (CTXT)
+# Análisis puramente descriptivo: sin supuestos reflectivos.
+# No se aplican Alpha, Omega, Rasch, GRM, EFA, AFC ni EGA.
+# =============================================================================
+
+#' Genera tabla descriptiva por ítem para CTXT.
+#'
+#' @param datos     data.frame numérico con solo los ítems de contexto
+#' @param etiqueta  cadena identificadora para mensajes de consola
+#' @return data.frame con un ítem por fila y todos los indicadores descriptivos
+#'         + columna decision_final: CONSERVAR | REVISAR | INFORMACIÓN LIMITADA
+
+analizar_items_contexto <- function(datos, etiqueta) {
+
+  n_total <- nrow(datos)
+  cat(sprintf("  [CTXT] %d ítems | N = %d respondentes\n", ncol(datos), n_total))
+
+  # Umbrales propios del pipeline de contexto
+  UMBRAL_NA_CTXT    <- CONFIG$umbral_NA_pct   # 20 %
+  UMBRAL_MODAL_CTXT <- 80                      # % categoría modal
+  UMBRAL_CAT_CTXT   <- 2                       # mínimo de categorías usadas
+  UMBRAL_SD_CTXT    <- 0.50                    # desviación estándar mínima
+
+  resultado <- lapply(names(datos), function(item) {
+    x       <- datos[[item]]
+    x_val   <- x[!is.na(x)]
+    n_val   <- length(x_val)
+    pct_na  <- round(mean(is.na(x)) * 100, 1)
+    pct_val <- round(n_val / n_total * 100, 1)
+
+    # Estadísticos de posición y dispersión
+    media <- if (n_val > 0) round(mean(x_val), 3) else NA_real_
+    desv  <- if (n_val > 1) round(sd(x_val),  3) else NA_real_
+    vari  <- if (n_val > 1) round(var(x_val), 3) else NA_real_
+
+    # Frecuencias y categoría modal
+    if (n_val > 0) {
+      freq_tab     <- sort(table(x_val), decreasing = TRUE)
+      n_cat_usadas <- length(freq_tab)
+      cat_modal    <- as.numeric(names(freq_tab)[1])
+      n_modal      <- as.integer(freq_tab[1])
+      prop_modal   <- round(n_modal / n_val * 100, 1)
+      freq_str     <- paste(
+        mapply(function(cat, cnt) sprintf("%s=%d(%.0f%%)", cat, cnt,
+                                         round(cnt / n_val * 100)),
+               names(freq_tab), as.integer(freq_tab)),
+        collapse = "; "
+      )
+      min_val <- min(x_val)
+      max_val <- max(x_val)
+    } else {
+      n_cat_usadas <- 0L
+      cat_modal    <- NA_real_
+      prop_modal   <- NA_real_
+      freq_str     <- "Sin datos válidos"
+      min_val      <- NA_real_
+      max_val      <- NA_real_
+    }
+
+    # Indicadores de calidad
+    flag_na     <- pct_na > UMBRAL_NA_CTXT
+    flag_modal  <- !is.na(prop_modal) && prop_modal > UMBRAL_MODAL_CTXT
+    flag_pocas  <- n_cat_usadas < UMBRAL_CAT_CTXT
+    flag_baja_v <- !is.na(desv) && desv < UMBRAL_SD_CTXT
+
+    # Efectos techo y piso (categoría modal coincide con extremo y supera 50%)
+    efecto_techo <- if (!is.na(cat_modal) && !is.na(max_val) &&
+                         cat_modal == max_val && !is.na(prop_modal) && prop_modal > 50)
+                      "Posible efecto techo" else "No"
+    efecto_piso  <- if (!is.na(cat_modal) && !is.na(min_val) &&
+                         cat_modal == min_val && !is.na(prop_modal) && prop_modal > 50)
+                      "Posible efecto piso"  else "No"
+
+    n_crit <- sum(flag_na, flag_modal, flag_pocas, flag_baja_v)
+
+    decision <- dplyr::case_when(
+      n_crit >= 2 ~ "INFORMACIÓN LIMITADA",
+      n_crit == 1 ~ "REVISAR",
+      TRUE        ~ "CONSERVAR"
+    )
+
+    data.frame(
+      Item                 = item,
+      pct_NA               = pct_na,
+      pct_validos          = pct_val,
+      n_validos            = n_val,
+      media                = media,
+      sd                   = desv,
+      varianza             = vari,
+      n_categorias_usadas  = n_cat_usadas,
+      categoria_modal      = cat_modal,
+      prop_modal_pct       = prop_modal,
+      frecuencias          = freq_str,
+      baja_variabilidad    = ifelse(flag_baja_v, "Sí", "No"),
+      efecto_techo         = efecto_techo,
+      efecto_piso          = efecto_piso,
+      flag_NA_alto         = ifelse(flag_na,    "Sí", "No"),
+      flag_modal_alta      = ifelse(flag_modal,  "Sí", "No"),
+      flag_pocas_cat       = ifelse(flag_pocas,  "Sí", "No"),
+      flag_baja_var        = ifelse(flag_baja_v, "Sí", "No"),
+      n_criterios_prob     = n_crit,
+      decision_final       = decision,
+      stringsAsFactors     = FALSE
+    )
+  })
+
+  tabla <- dplyr::bind_rows(resultado)
+
+  n_cons  <- sum(tabla$decision_final == "CONSERVAR",           na.rm = TRUE)
+  n_rev   <- sum(tabla$decision_final == "REVISAR",             na.rm = TRUE)
+  n_info  <- sum(tabla$decision_final == "INFORMACIÓN LIMITADA", na.rm = TRUE)
+  cat(sprintf("  [CTXT] Clasificación: %d CONSERVAR | %d REVISAR | %d INFORMACIÓN LIMITADA\n",
+              n_cons, n_rev, n_info))
+
+  # Gráfico de perfil de contexto: sd y prop_modal por ítem
+  tryCatch({
+    dir_fig <- file.path(CONFIG$dir_salida, "figuras")
+    dir.create(dir_fig, showWarnings = FALSE, recursive = TRUE)
+    ruta_p  <- file.path(dir_fig, paste0(etiqueta, "_Perfil_CTXT.png"))
+
+    n_it <- nrow(tabla)
+    alto <- max(600, n_it * 16)
+    png(ruta_p, width = 1400, height = alto, res = 120)
+
+    col_dec <- dplyr::case_when(
+      tabla$decision_final == "INFORMACIÓN LIMITADA" ~ "#888888",
+      tabla$decision_final == "REVISAR"              ~ "#E6A817",
+      TRUE                                           ~ "#006600"
+    )
+    op <- par(mfrow = c(1, 2), mar = c(4, 6, 3, 1), oma = c(0, 0, 3, 0))
+
+    sd_vals <- ifelse(is.na(tabla$sd), 0, tabla$sd)
+    barplot(sd_vals, names.arg = tabla$Item, horiz = TRUE, las = 1,
+            col = col_dec, border = NA, xlab = "Desviación estándar",
+            main = "SD por ítem")
+    abline(v = UMBRAL_SD_CTXT, lty = 2, col = "#856404", lwd = 1.5)
+
+    pm_vals <- ifelse(is.na(tabla$prop_modal_pct), 0, tabla$prop_modal_pct)
+    barplot(pm_vals, names.arg = tabla$Item, horiz = TRUE, las = 1,
+            col = col_dec, border = NA, xlab = "% categoría modal",
+            main = "Concentración modal", xlim = c(0, 100))
+    abline(v = UMBRAL_MODAL_CTXT, lty = 2, col = "#856404", lwd = 1.5)
+
+    mtext(paste0(etiqueta, " — Perfil CTXT"), outer = TRUE, cex = 1.2, font = 2)
+    legend("topright",
+           legend = c("CONSERVAR", "REVISAR", "INFORMACIÓN LIMITADA"),
+           fill   = c("#006600", "#E6A817", "#888888"),
+           border = NA, bty = "n", cex = 0.8)
+    par(op)
+    dev.off()
+    cat("  [CTXT] Perfil guardado:", basename(ruta_p), "\n")
+  }, error = function(e) NULL)
+
+  tabla
+}
+
+# =============================================================================
 # 5. COMPARACIÓN ENTRE CICLOS
 # =============================================================================
 
 #' Combina tablas de dos ciclos y genera comparativo con semáforo.
 #'
-#' @param tabla_A  resultado de analizar_items() para ciclo 2425
-#' @param tabla_B  resultado de analizar_items() para ciclo 2526
+#' @param tabla_A  resultado de analizar_items_psicometrico() para ciclo 2425
+#' @param tabla_B  resultado de analizar_items_psicometrico() para ciclo 2526
 #' @return data.frame comparativo
 
 #' Compara resultados psicométricos entre ciclos respetando el tipo de ítem.
@@ -925,8 +1102,8 @@ analizar_items <- function(datos, etiqueta, max_item = NULL) {
 #'   2. SIN_MATCH — ítem solo en 2425: indicadores del ciclo A, sin comparación
 #'   3. NUEVO     — ítem solo en 2526: indicadores del ciclo B, sin comparación
 #'
-#' @param tabla_A  resultado de analizar_items() para ciclo 2425
-#' @param tabla_B  resultado de analizar_items() para ciclo 2526
+#' @param tabla_A  resultado de analizar_items_psicometrico() para ciclo 2425
+#' @param tabla_B  resultado de analizar_items_psicometrico() para ciclo 2526
 
 comparar_ciclos <- function(tabla_A, tabla_B, ciclo_A = "2425", ciclo_B = "2526") {
 
@@ -1068,10 +1245,12 @@ COLORES <- list(
 # Aplica relleno por valor en col_decision
 estilo_decision <- function(wb, hoja, tabla, col_decision) {
   reglas <- list(
-    list(patron = "^ELIMINAR$",        col = COLORES$eliminar),
-    list(patron = "^Conservar",        col = COLORES$conservar),
-    list(patron = "^REVISAR",          col = COLORES$revisar),
-    list(patron = "DATOS_INSUF",       col = COLORES$insuf)
+    list(patron = "^ELIMINAR$",          col = COLORES$eliminar),
+    list(patron = "^Conservar",          col = COLORES$conservar),
+    list(patron = "^CONSERVAR$",         col = COLORES$conservar),   # CTXT
+    list(patron = "^REVISAR",            col = COLORES$revisar),
+    list(patron = "^INFORMACIÓN LIMITADA", col = COLORES$insuf),     # CTXT
+    list(patron = "DATOS_INSUF",         col = COLORES$insuf)
   )
   for (r in reglas) {
     filas <- which(grepl(r$patron, tabla[[col_decision]])) + 1
@@ -1183,9 +1362,15 @@ ejecutar_combinacion <- function(cuestion, figura, momento = "pre",
     cat(sprintf("  N sujetos: %d | N ítems crosswalk en datos: %d\n",
                 nrow(datos), ncol(datos)))
 
-    res <- analizar_items(datos, etiq, max_item = max_item)
+    # Despachar al pipeline según el tipo de cuestionario
+    res <- if (cuestion == "CTXT") {
+      analizar_items_contexto(datos, etiq)
+    } else {
+      analizar_items_psicometrico(datos, etiq, max_item = max_item)
+    }
+
     if (is.null(res) || nrow(res) == 0) {
-      cat("  Sin ítems analizables (todos continuos o excluidos) — omitido.\n")
+      cat("  Sin ítems analizables — omitido.\n")
       next
     }
     res$ciclo    <- ciclo
@@ -1200,15 +1385,56 @@ ejecutar_combinacion <- function(cuestion, figura, momento = "pre",
 # 8. CONSTRUCCIÓN DE TABLA ANCHA Y GENERACIÓN DE EXCEL POR CUESTIONARIO
 # =============================================================================
 
-# Indicadores que se replican por cada ciclo+momento
-INDICADORES_CM <- c("pct_NA", "media", "p_dificultad", "ritc",
-                     "alpha_sin_item",
-                     "b_Rasch", "infit_MNSQ", "outfit_MNSQ",          # Rasch — descriptivo
-                     "a_GRM",                                           # GRM   — vota
-                     "comunalidad_EFA",                                 # EFA   — vota
-                     "carga_AFC", "R2_AFC",                             # AFC   — vota
-                     "estabilidad_EGA",                                 # EGA   — descriptivo
-                     "votos_eliminacion", "decision_final")
+# Indicadores por ciclo+momento — Pipeline psicométrico (HD, HSXXI, HI)
+INDICADORES_CM <- c(
+  "pct_NA", "media", "p_dificultad", "ritc", "alpha_sin_item",
+  "b_Rasch", "infit_MNSQ", "outfit_MNSQ",   # Rasch — descriptivo
+  "a_GRM",                                   # GRM   — vota
+  "comunalidad_EFA",                         # EFA   — vota
+  "carga_AFC", "R2_AFC",                     # AFC   — vota
+  "estabilidad_EGA",                         # EGA   — descriptivo
+  "votos_eliminacion", "decision_final"
+)
+
+# Indicadores por ciclo+momento — Pipeline de contexto (CTXT)
+INDICADORES_CM_CTXT <- c(
+  "pct_NA", "pct_validos", "n_validos",
+  "media", "sd", "varianza",
+  "n_categorias_usadas", "categoria_modal", "prop_modal_pct",
+  "baja_variabilidad", "efecto_techo", "efecto_piso",
+  "flag_NA_alto", "flag_modal_alta", "flag_pocas_cat", "flag_baja_var",
+  "n_criterios_prob", "decision_final"
+)
+
+#' Justificación para pipeline de CONTEXTO: lista flags activados por ciclo.
+generar_justificacion_ctxt <- function(fila, claves_cm) {
+  get1 <- function(nm) {
+    v <- fila[[nm]]
+    if (is.null(v) || length(v) == 0) NA_character_ else as.character(v[[1]])
+  }
+
+  dec_vals <- sapply(claves_cm, function(cm) get1(paste0("Decision_", cm)))
+
+  if (all(is.na(dec_vals) | dec_vals == "Sin datos"))
+    return("Sin datos en ningún ciclo disponible.")
+
+  if (all(!is.na(dec_vals) & dec_vals == "CONSERVAR"))
+    return("CONSERVAR en todos los ciclos disponibles.")
+
+  razones <- c()
+  for (cm in claves_cm) {
+    flags <- c()
+    if (!is.na(get1(paste0(cm, "_flag_NA_alto")))    && get1(paste0(cm, "_flag_NA_alto"))    == "Sí") flags <- c(flags, sprintf("NA>20%%(%.0f%%)", as.numeric(fila[[paste0(cm, "_pct_NA")]])))
+    if (!is.na(get1(paste0(cm, "_flag_modal_alta"))) && get1(paste0(cm, "_flag_modal_alta")) == "Sí") flags <- c(flags, sprintf("modal>80%%(%.0f%%)", as.numeric(fila[[paste0(cm, "_prop_modal_pct")]])))
+    if (!is.na(get1(paste0(cm, "_flag_pocas_cat")))  && get1(paste0(cm, "_flag_pocas_cat"))  == "Sí") flags <- c(flags, "< 2 categorías usadas")
+    if (!is.na(get1(paste0(cm, "_flag_baja_var")))   && get1(paste0(cm, "_flag_baja_var"))   == "Sí") flags <- c(flags, sprintf("SD<0.50(%.2f)", as.numeric(fila[[paste0(cm, "_sd")]])))
+    if (length(flags) > 0)
+      razones <- c(razones, paste0("[", cm, ": ", paste(flags, collapse = ", "), "]"))
+  }
+
+  if (length(razones) == 0) return("Revisar por criterio de contenido.")
+  paste(razones, collapse = " ")
+}
 
 #' Construye una fila de justificación a partir de los indicadores por ciclo.
 generar_justificacion <- function(fila, claves_cm) {
@@ -1267,7 +1493,10 @@ generar_justificacion <- function(fila, claves_cm) {
 #' La unión con resultados de análisis es:
 #'   ciclo 2425 → por code_2425 (= Item en analizar_items)
 #'   ciclo 2526 → por code_2526 (= Item en analizar_items)
-construir_tabla_ancha <- function(resultados_lista, cw_df) {
+construir_tabla_ancha <- function(resultados_lista, cw_df,
+                                  indicadores = INDICADORES_CM,
+                                  tipo = c("psicometrico", "ctxt")) {
+  tipo <- match.arg(tipo)
   if (length(resultados_lista) == 0 || is.null(cw_df) || nrow(cw_df) == 0) return(NULL)
 
   # Lista maestra: todas las filas del crosswalk (code_2425 es la llave primaria;
@@ -1282,7 +1511,7 @@ construir_tabla_ancha <- function(resultados_lista, cw_df) {
     ciclo    <- sub("_.*", "", clave)                   # "2425" o "2526"
     cm_label <- gsub("_", "", clave)                    # "2425pre", "2526pre"
 
-    cols_usar <- intersect(INDICADORES_CM, names(res))
+    cols_usar <- intersect(indicadores, names(res))
     bloque    <- res[, c("Item", cols_usar), drop = FALSE]
     names(bloque)[-1] <- paste0(cm_label, "_", names(bloque)[-1])
 
@@ -1310,38 +1539,70 @@ construir_tabla_ancha <- function(resultados_lista, cw_df) {
   dec_cols_final <- paste0("Decision_", gsub("_", "", claves_cm))
   dec_cols_final <- intersect(dec_cols_final, names(tabla))
 
-  # Decision_final consolidada entre ciclos:
-  #   ELIMINAR  → mayoría de ciclos disponibles dicen ELIMINAR
-  #   REVISAR   → algún ciclo dice REVISAR (y ninguno da mayoría ELIMINAR)
-  #   Conservar → resto
-  tabla$ciclos_datos   <- rowSums(!is.na(tabla[, dec_cols_final, drop = FALSE]))
-  tabla$ciclos_elim    <- rowSums(
-    sapply(dec_cols_final, function(d) {
-      v <- tabla[[d]]
-      ifelse(!is.na(v) & v == "ELIMINAR", 1L, 0L)
-    }), na.rm = TRUE)
-  tabla$ciclos_revisar <- rowSums(
-    sapply(dec_cols_final, function(d) {
-      v <- tabla[[d]]
-      ifelse(!is.na(v) & v == "REVISAR", 1L, 0L)
-    }), na.rm = TRUE)
+  # Decision_final consolidada entre ciclos
+  tabla$ciclos_datos <- rowSums(!is.na(tabla[, dec_cols_final, drop = FALSE]))
 
-  tabla$Decision_final <- dplyr::case_when(
-    tabla$ciclos_datos   == 0                               ~ "Sin datos",
-    tabla$ciclos_elim    >= ceiling(tabla$ciclos_datos / 2) ~ "ELIMINAR",
-    tabla$ciclos_revisar >= 1                               ~ "REVISAR",
-    TRUE                                                    ~ "Conservar"
-  )
+  if (tipo == "ctxt") {
+    # Pipeline contexto: sin eliminación automática
+    #   INFORMACIÓN LIMITADA → algún ciclo lo dice
+    #   REVISAR              → algún ciclo lo dice (sin INFORMACIÓN LIMITADA)
+    #   CONSERVAR            → todos los ciclos con datos lo dicen
+    tabla$ciclos_info <- rowSums(
+      sapply(dec_cols_final, function(d) {
+        v <- tabla[[d]]
+        ifelse(!is.na(v) & v == "INFORMACIÓN LIMITADA", 1L, 0L)
+      }), na.rm = TRUE)
+    tabla$ciclos_rev <- rowSums(
+      sapply(dec_cols_final, function(d) {
+        v <- tabla[[d]]
+        ifelse(!is.na(v) & v == "REVISAR", 1L, 0L)
+      }), na.rm = TRUE)
 
-  # Justificación
-  cm_labels <- gsub("_", "", claves_cm)
-  tabla$Justificacion <- apply(tabla, 1, function(r) {
-    generar_justificacion(as.list(r), cm_labels)
-  })
+    tabla$Decision_final <- dplyr::case_when(
+      tabla$ciclos_datos == 0   ~ "Sin datos",
+      tabla$ciclos_info  >= 1   ~ "INFORMACIÓN LIMITADA",
+      tabla$ciclos_rev   >= 1   ~ "REVISAR",
+      TRUE                      ~ "CONSERVAR"
+    )
+    tabla$ciclos_info <- NULL
+    tabla$ciclos_rev  <- NULL
 
-  tabla$ciclos_datos   <- NULL
-  tabla$ciclos_elim    <- NULL
-  tabla$ciclos_revisar <- NULL
+    # Justificación CTXT: listar qué flags se activaron
+    cm_labels <- gsub("_", "", claves_cm)
+    tabla$Justificacion <- apply(tabla, 1, function(r) {
+      generar_justificacion_ctxt(as.list(r), cm_labels)
+    })
+
+  } else {
+    # Pipeline psicométrico: ELIMINAR | REVISAR | Conservar
+    tabla$ciclos_elim <- rowSums(
+      sapply(dec_cols_final, function(d) {
+        v <- tabla[[d]]
+        ifelse(!is.na(v) & v == "ELIMINAR", 1L, 0L)
+      }), na.rm = TRUE)
+    tabla$ciclos_rev  <- rowSums(
+      sapply(dec_cols_final, function(d) {
+        v <- tabla[[d]]
+        ifelse(!is.na(v) & v == "REVISAR", 1L, 0L)
+      }), na.rm = TRUE)
+
+    tabla$Decision_final <- dplyr::case_when(
+      tabla$ciclos_datos == 0                               ~ "Sin datos",
+      tabla$ciclos_elim  >= ceiling(tabla$ciclos_datos / 2) ~ "ELIMINAR",
+      tabla$ciclos_rev   >= 1                               ~ "REVISAR",
+      TRUE                                                  ~ "Conservar"
+    )
+    tabla$ciclos_elim <- NULL
+    tabla$ciclos_rev  <- NULL
+
+    # Justificación psicométrica
+    cm_labels <- gsub("_", "", claves_cm)
+    tabla$Justificacion <- apply(tabla, 1, function(r) {
+      generar_justificacion(as.list(r), cm_labels)
+    })
+  }
+
+  tabla$ciclos_datos <- NULL
 
   tabla
 }
@@ -1382,16 +1643,21 @@ consolidar_cuestionario <- function(cuestion, catalogo) {
         resultados_figura <- c(resultados_figura, res_cm)
     }
 
+    # Seleccionar indicadores y tipo según el cuestionario
+    es_ctxt       <- cuestion == "CTXT"
+    ind_usar      <- if (es_ctxt) INDICADORES_CM_CTXT else INDICADORES_CM
+    tipo_pipeline <- if (es_ctxt) "ctxt" else "psicometrico"
+
     if (length(resultados_figura) == 0) {
       cat("  Sin resultados de análisis para figura", figura,
           "— se incluye tabla de ítems sin indicadores.\n")
-      # Aún así generar la pestaña con la lista de ítems del crosswalk
       tabla_ancha <- cw_df[, c("code_2425", "code_2526", "texto_2425", "tipo_match")]
       tabla_ancha$Decision_final <- "Sin datos"
       tabla_ancha$Justificacion  <- "No se encontraron archivos de datos para este ciclo"
     } else {
-      # Tabla ancha: crosswalk × (indicadores por ciclo+momento)
-      tabla_ancha <- construir_tabla_ancha(resultados_figura, cw_df)
+      tabla_ancha <- construir_tabla_ancha(resultados_figura, cw_df,
+                                           indicadores = ind_usar,
+                                           tipo = tipo_pipeline)
       if (is.null(tabla_ancha) || nrow(tabla_ancha) == 0) next
     }
 
@@ -1402,34 +1668,51 @@ consolidar_cuestionario <- function(cuestion, catalogo) {
                        col_decision = "Decision_final")
 
     # Acumular para pestaña resumen
-    n_total   <- nrow(tabla_ancha)
-    n_elim    <- sum(tabla_ancha$Decision_final == "ELIMINAR",  na.rm = TRUE)
-    n_revisar <- sum(tabla_ancha$Decision_final == "REVISAR",   na.rm = TRUE)
-    n_cons    <- sum(tabla_ancha$Decision_final == "Conservar", na.rm = TRUE)
-
-    # Extraer omegas del primer resultado disponible con análisis para esta figura
-    omega_tot <- NA_real_
-    omega_red <- NA_real_
-    for (res_k in resultados_figura) {
-      ot <- attr(res_k, "omega_total")
-      or <- attr(res_k, "omega_reducida")
-      if (!is.null(ot) && !is.na(ot)) { omega_tot <- ot; omega_red <- or; break }
+    n_total <- nrow(tabla_ancha)
+    if (es_ctxt) {
+      n_cons    <- sum(tabla_ancha$Decision_final == "CONSERVAR",           na.rm = TRUE)
+      n_revisar <- sum(tabla_ancha$Decision_final == "REVISAR",             na.rm = TRUE)
+      n_info    <- sum(tabla_ancha$Decision_final == "INFORMACIÓN LIMITADA", na.rm = TRUE)
+      n_elim    <- 0L
+      omega_tot <- NA_real_
+      omega_red <- NA_real_
+      resumen_filas[[figura]] <- data.frame(
+        cuestionario       = cuestion,
+        figura             = figura,
+        total_items        = n_total,
+        conservar          = n_cons,
+        revisar            = n_revisar,
+        informacion_limitada = n_info,
+        stringsAsFactors   = FALSE
+      )
+      cat(sprintf("  [OK] %s: %d ítems | %d CONSERVAR | %d REVISAR | %d INFO LIMITADA\n",
+                  figura, n_total, n_cons, n_revisar, n_info))
+    } else {
+      n_elim    <- sum(tabla_ancha$Decision_final == "ELIMINAR",  na.rm = TRUE)
+      n_revisar <- sum(tabla_ancha$Decision_final == "REVISAR",   na.rm = TRUE)
+      n_cons    <- sum(tabla_ancha$Decision_final == "Conservar", na.rm = TRUE)
+      omega_tot <- NA_real_
+      omega_red <- NA_real_
+      for (res_k in resultados_figura) {
+        ot <- attr(res_k, "omega_total")
+        or <- attr(res_k, "omega_reducida")
+        if (!is.null(ot) && !is.na(ot)) { omega_tot <- ot; omega_red <- or; break }
+      }
+      resumen_filas[[figura]] <- data.frame(
+        cuestionario    = cuestion,
+        figura          = figura,
+        total_items     = n_total,
+        a_eliminar      = n_elim,
+        a_revisar       = n_revisar,
+        a_conservar     = n_cons,
+        pct_reduccion   = round(n_elim / n_total * 100, 1),
+        omega_total     = omega_tot,
+        omega_reducida  = omega_red,
+        stringsAsFactors = FALSE
+      )
+      cat(sprintf("  [OK] %s: %d ítems | %d Eliminar | %d Revisar | %d Conservar\n",
+                  figura, n_total, n_elim, n_revisar, n_cons))
     }
-
-    resumen_filas[[figura]] <- data.frame(
-      cuestionario    = cuestion,
-      figura          = figura,
-      total_items     = n_total,
-      a_eliminar      = n_elim,
-      a_revisar       = n_revisar,
-      a_conservar     = n_cons,
-      pct_reduccion   = round(n_elim / n_total * 100, 1),
-      omega_total     = omega_tot,
-      omega_reducida  = omega_red,
-      stringsAsFactors = FALSE
-    )
-    cat(sprintf("  [OK] %s: %d ítems | %d Eliminar | %d Revisar | %d Conservar\n",
-                figura, n_total, n_elim, n_revisar, n_cons))
   }
 
   if (length(resumen_filas) == 0) {
@@ -1451,10 +1734,80 @@ consolidar_cuestionario <- function(cuestion, catalogo) {
 }
 
 # =============================================================================
+# 8-B. REPORTE DE ESTRUCTURAS DE DIMENSIONES PARA AFC MULTIDIMENSIONAL
+# =============================================================================
+# HALLAZGO: el archivo crosswalk contiene la columna 'dimension' que asigna
+# cada ítem a su dimensión teórica dentro del instrumento.  cargar_crosswalk_completo()
+# ACTUALMENTE descarta esa columna (no la incluye en el data.frame devuelto).
+#
+# Para implementar AFC por dimensión (en lugar de unifactorial) bastaría:
+#   1. Añadir 'dimension' al data.frame devuelto por cargar_crosswalk_completo()
+#   2. En analizar_items_psicometrico(), construir el modelo CFA así:
+#        dimensiones <- unique(cw_df$dimension)
+#        lineas <- sapply(dimensiones, function(d) {
+#          items_d <- cw_df$code_2425[cw_df$dimension == d]
+#          paste0(d, " =~ ", paste(items_d, collapse=" + "))
+#        })
+#        modelo_multidim <- paste(lineas, collapse="\n")
+#        fit_afc_multi <- lavaan::cfa(modelo_multidim, ...)
+#   3. Extraer cargas por dimensión y calcular indicadores de ajuste global
+#      (CFI, RMSEA, SRMR) para reportar si la estructura dimensional es adecuada.
+#
+# Esta función lee el crosswalk y reporta qué dimensiones existen por hoja.
+# Ejecutar después de que el script esté cargado.
+
+reportar_dimensiones_cw <- function() {
+  if (!file.exists(CROSSWALK_PATH)) {
+    cat("[REPORTE AFC] Crosswalk no encontrado:", CROSSWALK_PATH, "\n")
+    return(invisible(NULL))
+  }
+  cw <- tryCatch(
+    openxlsx::read.xlsx(CROSSWALK_PATH, sheet = "CROSSWALK_COMPLETO",
+                        na.strings = c("", "NA")),
+    error = function(e) NULL
+  )
+  if (is.null(cw)) { cat("[REPORTE AFC] No se pudo leer el crosswalk.\n"); return(invisible(NULL)) }
+
+  tiene_dim <- "dimension" %in% names(cw)
+  cat("\n", strrep("=", 70), "\n")
+  cat("REPORTE: Estructuras de dimensiones disponibles para AFC multidimensional\n")
+  cat(strrep("=", 70), "\n\n")
+
+  if (!tiene_dim) {
+    cat("  La columna 'dimension' NO existe en CROSSWALK_COMPLETO.\n")
+    cat("  AFC multidimensional requiere añadir esa columna al crosswalk.\n\n")
+    return(invisible(NULL))
+  }
+
+  cat("  La columna 'dimension' EXISTE. Estructura encontrada:\n\n")
+  cw_ok <- cw[!is.na(cw$validado) & trimws(cw$validado) == "OK", ]
+
+  hojas <- sort(unique(trimws(as.character(cw_ok$hoja))))
+  for (h in hojas) {
+    sub <- cw_ok[trimws(cw_ok$hoja) == h, ]
+    dims <- sort(unique(trimws(as.character(sub$dimension[!is.na(sub$dimension)]))))
+    cat(sprintf("  %-20s  %d ítems  |  Dimensiones (%d): %s\n",
+                h, nrow(sub), length(dims),
+                if (length(dims) == 0) "sin asignar" else paste(dims, collapse=", ")))
+  }
+
+  cat("\n  RECOMENDACIÓN:\n")
+  cat("  - Preservar 'dimension' en cargar_crosswalk_completo() (añadir al data.frame).\n")
+  cat("  - Pasar cw_df a analizar_items_psicometrico() y construir modelo CFA\n")
+  cat("    por dimensión usando las líneas del model string de lavaan.\n")
+  cat("  - Reportar ajuste global (CFI≥.90, RMSEA≤.08, SRMR≤.08) antes de\n")
+  cat("    interpretar cargas por dimensión.\n")
+  cat("  - NO implementado aún: solo diagnóstico de disponibilidad de estructura.\n\n")
+  invisible(cw_ok)
+}
+
+# =============================================================================
 # 9. PUNTO DE ENTRADA PRINCIPAL
 # =============================================================================
 
 cat("\nScript cargado. Construyendo catálogo de archivos...\n")
+# Reporte de estructuras dimensionales disponibles para AFC multidimensional
+reportar_dimensiones_cw()
 catalogo <- catalogo_archivos()
 cat(sprintf("Archivos encontrados: %d\n", nrow(catalogo)))
 if (nrow(catalogo) > 0) print(catalogo[, c("ciclo","cuestion","figura","momento")])
