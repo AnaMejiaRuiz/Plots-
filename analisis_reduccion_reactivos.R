@@ -247,56 +247,51 @@ cargar_base <- function(ruta, ciclo, mapa_cw = NULL) {
   # HSXXI  : hsxxi_acuerdo (0-4), hsxxi_frecuencia (0-4)
   # CTXT   : ctx_frecuencia (0-3), ctx_receptor (0-4), ctx_acuerdo (0-4), ctx_binaria (0-1)
   MAPA_TEXTO_NUM <- c(
-    # ── HD: conocimiento (0-3) ───────────────────────────────────────────────
-    "No sé / Nunca he oído hablar de esto"                                     = 0,
-    "Conozco un poco el tema"                                                  = 1,
-    "Sí, conozco bien este tema"                                               = 2,
-    "Totalmente, e incluso podría explicárselo a otras personas"               = 3,
-    # ── HD: habilidad (0-3) ─────────────────────────────────────────────────
-    "No sé cómo hacerlo"                                                       = 0,
-    "Puedo hacerlo con ayuda"                                                  = 1,
-    "Puedo hacerlo por mi cuenta"                                              = 2,
+    # HD: conocimiento (0-3)
+    "No sé / Nunca he oído hablar de esto"                                        = 0,
+    "Conozco un poco el tema"                                                     = 1,
+    "Sí, conozco bien este tema"                                                  = 2,
+    "Totalmente, e incluso podría explicárselo a otras personas"                  = 3,
+    # HD: habilidad (0-3)
+    "No sé cómo hacerlo"                                                          = 0,
+    "Puedo hacerlo con ayuda"                                                     = 1,
+    "Puedo hacerlo por mi cuenta"                                                 = 2,
     "Puedo hacerlo con confianza y si es necesario puedo ayudar a otras personas" = 3,
-    # ── HD: frecuencia (0-4) ────────────────────────────────────────────────
-    "Nunca"                                                                    = 0,
-    "Rara vez"                                                                 = 1,
-    "Algunas veces"                                                            = 2,
-    "Frecuentemente"                                                           = 3,
-    "Siempre"                                                                  = 4,
-    # ── HI: frecuencia (0-4) ────────────────────────────────────────────────
-    "Casi nunca"                                                               = 0,
-    "Algunas veces durante el semestre/año"                                    = 1,
-    "1 a 3 veces al mes"                                                       = 2,
-    "1 a 3 veces por semana"                                                   = 3,
-    "Casi todos los días"                                                      = 4,
-    # ── HI: acuerdo (0-4) ───────────────────────────────────────────────────
-    "No estoy de acuerdo"                                                      = 0,
-    "Muy de acuerdo"                                                           = 3,
-    # ── HSXXI: acuerdo (0-4) ────────────────────────────────────────────────
-    "Totalmente en desacuerdo"                                                 = 0,
-    "Algo en desacuerdo"                                                       = 1,
-    "Ni de acuerdo ni en desacuerdo"                                           = 2,
-    "Algo de acuerdo"                                                          = 3,
-    # "Totalmente de acuerdo" ya definido arriba = 4  →  se omite duplicado
-    # NOTA: "De acuerdo" en HI = 2 (posición intermedia de 5);
-    #        en CTXT ctx_acuerdo = misma escala HSXXI, "De acuerdo" no aparece.
-    "De acuerdo"                                                               = 2
-    # ── CTXT: frecuencia (0-3) ──────────────────────────────────────────────
-    # "Nunca"=0 y "Siempre" se codifican igual que HD/HSXXI/HI; el máximo
-    # empírico de los ítems CTXT será 3 (nunca llegan respuestas de nivel 4),
-    # por lo que analizar_items detectará correctamente la escala 0-3.
-    "Pocas veces"                                                              = 1,
-    "Muchas veces"                                                             = 2,
-    # ── CTXT: receptividad (0-4) ────────────────────────────────────────────
-    "Nada receptivos"                                                          = 0,
-    "Poco receptivos"                                                          = 1,
-    "Indiferentes"                                                             = 2,
-    "Medianamente receptivos"                                                  = 3,
-    "Muy receptivos"                                                           = 4,
-    # ── Binaria (0-1) ───────────────────────────────────────────────────────
-    "No"                                                                       = 0,
-    "Sí"                                                                       = 1,
-    "Si"                                                                       = 1
+    # HD/HSXXI/HI: frecuencia (0-4)
+    "Nunca"                                                                       = 0,
+    "Rara vez"                                                                    = 1,
+    "Algunas veces"                                                               = 2,
+    "Frecuentemente"                                                              = 3,
+    "Siempre"                                                                     = 4,
+    # HI: frecuencia propia (0-4)
+    "Casi nunca"                                                                  = 0,
+    "Algunas veces durante el semestre/año"                                       = 1,
+    "1 a 3 veces al mes"                                                          = 2,
+    "1 a 3 veces por semana"                                                      = 3,
+    "Casi todos los días"                                                         = 4,
+    # HI: acuerdo (0-4)
+    "No estoy de acuerdo"                                                         = 0,
+    "Algo de acuerdo"                                                             = 3,
+    "De acuerdo"                                                                  = 2,
+    "Muy de acuerdo"                                                              = 3,
+    "Totalmente de acuerdo"                                                       = 4,
+    # HSXXI: acuerdo (0-4)
+    "Totalmente en desacuerdo"                                                    = 0,
+    "Algo en desacuerdo"                                                          = 1,
+    "Ni de acuerdo ni en desacuerdo"                                              = 2,
+    # CTXT: frecuencia (0-3) — "Nunca"=0 y "Siempre"=4 ya definidos arriba
+    "Pocas veces"                                                                 = 1,
+    "Muchas veces"                                                                = 2,
+    # CTXT: receptividad (0-4)
+    "Nada receptivos"                                                             = 0,
+    "Poco receptivos"                                                             = 1,
+    "Indiferentes"                                                                = 2,
+    "Medianamente receptivos"                                                     = 3,
+    "Muy receptivos"                                                              = 4,
+    # Binaria (0-1)
+    "No"                                                                          = 0,
+    "Sí"                                                                          = 1,
+    "Si"                                                                          = 1
   )
 
   recodificar_col <- function(x) {
