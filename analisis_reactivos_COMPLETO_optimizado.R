@@ -249,9 +249,31 @@ bloque_psico <- function(dat, tipo_bloque, max_col, etiq) {
     stringsAsFactors=FALSE)
 
   items_ok <- names(dat)[flag_na=="OK"]
-  d  <- dat[,items_ok,drop=FALSE]
-  mx <- max_col[items_ok]; mx[is.na(mx)|mx<=0] <- 1
-  if (ncol(d)<2) { tabla$decision <- "INSUF_ITEMS"; return(tabla) }
+  d_all <- dat[,items_ok,drop=FALSE]
+
+  # O6: ítems con varianza cero (o con <2 observaciones válidas) producen
+  # NA en la matriz de correlación y hacen fallar psych::alpha()/fa() para
+  # TODO el bloque, no solo para ese ítem ("missing values (NAs) in the
+  # correlation matrix do not allow me to continue"). Se excluyen del
+  # cálculo psicométrico (TCT/Rasch/GRM/EFA) y se marcan como DATOS_INSUF,
+  # en vez de dejar que tumben el bloque completo.
+  sd0 <- vapply(d_all, function(x) {
+    v <- x[!is.na(x)]
+    if (length(v) < 2) return(NA_real_)
+    sd(v)
+  }, numeric(1))
+  var_cero <- names(sd0)[is.na(sd0) | sd0 == 0]
+  if (length(var_cero)) {
+    cat(sprintf("        Excluidos por varianza cero/insuficiente: %s\n",
+                paste(var_cero, collapse=", ")))
+  }
+
+  d  <- d_all[, setdiff(names(d_all), var_cero), drop=FALSE]
+  mx <- max_col[setdiff(items_ok, var_cero)]; mx[is.na(mx)|mx<=0] <- 1
+  if (ncol(d)<2) {
+    tabla$decision <- ifelse(tabla$Item %in% var_cero, "DATOS_INSUF", "INSUF_ITEMS")
+    return(tabla)
+  }
   es_d <- tipo_bloque == "DICOT"
 
   # ── TCT ──────────────────────────────────────────────────────
@@ -417,6 +439,11 @@ bloque_psico <- function(dat, tipo_bloque, max_col, etiq) {
       TRUE                                ~ "Conservar"
     )
   }
+  if (!"decision" %in% names(tabla))
+    tabla$decision <- ifelse(tabla$flag_NA=="DATOS_INSUF","DATOS_INSUF","Conservar")
+  # Ítems con varianza cero/insuficiente: nunca pasaron por TCT/Rasch/GRM/EFA
+  # (ver filtro var_cero arriba). Se marcan DATOS_INSUF sin importar el voto.
+  tabla$decision[tabla$Item %in% var_cero] <- "DATOS_INSUF"
 
   ic <- tabla$Item[!is.na(tabla$decision) & tabla$decision=="Conservar" &
                      tabla$Item %in% names(d)]
