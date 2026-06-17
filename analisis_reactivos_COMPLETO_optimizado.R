@@ -269,9 +269,31 @@ bloque_psico <- function(dat, tipo_bloque, max_col, etiq) {
   }
 
   d  <- d_all[, setdiff(names(d_all), var_cero), drop=FALSE]
-  mx <- max_col[setdiff(items_ok, var_cero)]; mx[is.na(mx)|mx<=0] <- 1
+
+  # O7: aun sin varianza cero, dos ítems pueden no compartir suficientes
+  # observaciones no-NA entre sí, lo que deja NA en su celda de la matriz
+  # de correlación por pares y hace fallar psych::alpha()/fa() para TODO
+  # el bloque otra vez. Se elimina iterativamente el ítem más problemático
+  # (el que más NAs genera en la matriz) hasta que la matriz quede limpia.
+  excl_pairwise <- character(0)
+  repeat {
+    if (ncol(d) < 2) break
+    cm <- suppressWarnings(stats::cor(d, use="pairwise.complete.obs"))
+    n_na <- colSums(is.na(cm))
+    if (all(n_na == 0)) break
+    peor <- names(which.max(n_na))
+    excl_pairwise <- c(excl_pairwise, peor)
+    d <- d[, setdiff(names(d), peor), drop=FALSE]
+  }
+  if (length(excl_pairwise)) {
+    cat(sprintf("        Excluidos por NA en correlación por pares: %s\n",
+                paste(excl_pairwise, collapse=", ")))
+  }
+
+  excluidos_psico <- c(var_cero, excl_pairwise)
+  mx <- max_col[setdiff(items_ok, excluidos_psico)]; mx[is.na(mx)|mx<=0] <- 1
   if (ncol(d)<2) {
-    tabla$decision <- ifelse(tabla$Item %in% var_cero, "DATOS_INSUF", "INSUF_ITEMS")
+    tabla$decision <- ifelse(tabla$Item %in% excluidos_psico, "DATOS_INSUF", "INSUF_ITEMS")
     return(tabla)
   }
   es_d <- tipo_bloque == "DICOT"
@@ -441,9 +463,10 @@ bloque_psico <- function(dat, tipo_bloque, max_col, etiq) {
   }
   if (!"decision" %in% names(tabla))
     tabla$decision <- ifelse(tabla$flag_NA=="DATOS_INSUF","DATOS_INSUF","Conservar")
-  # Ítems con varianza cero/insuficiente: nunca pasaron por TCT/Rasch/GRM/EFA
-  # (ver filtro var_cero arriba). Se marcan DATOS_INSUF sin importar el voto.
-  tabla$decision[tabla$Item %in% var_cero] <- "DATOS_INSUF"
+  # Ítems con varianza cero o NA en correlación por pares: nunca pasaron
+  # por TCT/Rasch/GRM/EFA (ver filtros arriba). Se marcan DATOS_INSUF sin
+  # importar el voto.
+  tabla$decision[tabla$Item %in% excluidos_psico] <- "DATOS_INSUF"
 
   ic <- tabla$Item[!is.na(tabla$decision) & tabla$decision=="Conservar" &
                      tabla$Item %in% names(d)]
